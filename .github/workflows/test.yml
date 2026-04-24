@@ -1,0 +1,50 @@
+# ────────────────────────────────────────────────────────
+# investment-alert CI 워크플로우
+# GTT팀 공통지침 11 준수: ruff check + pytest 세트 실행
+# Day 1 완료 보고서의 80% coverage threshold 유지
+# ────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    name: Lint + Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 1단계: Lint (GTT팀 공통지침 11 규칙 B) ──────────
+      - name: Ruff Check
+        run: ruff check . --line-length=100
+
+      # ── 2단계: 기능 테스트 ──────────────────────────────
+      - name: Pytest
+        run: pytest tests/ -v --cov-fail-under=80
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: htmlcov/
+          retention-days: 7
