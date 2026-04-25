@@ -44,7 +44,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Anti-bot random delay (schedule only)
-        if: ${{ github.event_name != 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
         run: |
           DELAY=$((RANDOM % 200))
           echo "⏱️ Random delay: ${DELAY}s"
