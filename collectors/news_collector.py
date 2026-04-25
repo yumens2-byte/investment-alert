@@ -216,6 +216,10 @@ class NewsCollector(BaseCollector):
 
             try:
                 feed = self._retry_request(feedparser.parse, url)
+
+                #주석
+                http_status = getattr(feed, "status", "N/A")
+                source_count_before = len(events)
                 entries = getattr(feed, "entries", [])
 
                 for entry in entries[:10]:  # 소스당 최근 10건
@@ -235,6 +239,17 @@ class NewsCollector(BaseCollector):
                         continue
 
                     events.append(event)
+
+
+                  
+
+                # 제목: 소스별 수집 결과 로그
+                collected = len(events) - source_count_before
+                logger.info(
+                    f"[NewsCollector] {source_name} (Tier {tier}): "
+                    f"HTTP={http_status}, RSS={len(entries)}건, "
+                    f"윈도우내={collected}건"
+                )
 
             except Exception as e:
                 logger.warning(f"[NewsCollector] {source_name} 수집 실패: {type(e).__name__}: {e}")
