@@ -46,6 +46,9 @@ jobs:
       - name: Create log directory
         run: mkdir -p logs
 
+      - name: Run Diagnostics
+        run: python run_diagnostics.py
+
       - name: Run Alert Pipeline
         run: python run_alert.py
 
