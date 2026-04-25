@@ -13,6 +13,7 @@ import sys
 
 from collectors.news_collector import NewsCollector
 from collectors.youtube_collector import YouTubeCollector
+from core.data_logger import DataLogger
 from core.logger import configure_root_logger, get_logger
 from db.alert_store import AlertStore
 from detection.alert_engine import AlertEngine
@@ -66,6 +67,11 @@ def main() -> None:
 
     # ── Step 3: AlertSignal 생성 ─────────────────────────────
     signal = alert_engine.process(result)
+
+    # ── Step 3-LOG: 전체 수집 데이터 로그 출력 ─────────────────
+    logger.info("[run_alert] Step 3-LOG: 전체 수집 데이터 로그 출력")
+    data_logger = DataLogger()
+    data_logger.log_all(result=result, signal=signal)
 
     # ── Step 4: 발행 판단 ────────────────────────────────────
     if result.level == "NONE":
