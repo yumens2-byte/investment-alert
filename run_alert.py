@@ -43,7 +43,7 @@ def main() -> None:
     from datetime import datetime, UTC
     _log_ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     _log_file = f"logs/run_alert_{_log_ts}.log"
-
+      
      from datetime import datetime, UTC
     _log_ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     _log_file = f"logs/run_alert_{_log_ts}.log"
@@ -53,7 +53,7 @@ def main() -> None:
     # configure_root_logger(log_file=_log_file)
     # logger = get_logger(__name__)
     # logger.info(f"[run_alert] v{VERSION} 시작 — 로그파일: {_log_file}")
-      
+
 
     # ── Step 1: 의존성 초기화 ────────────────────────────────
     alert_store = AlertStore()
