@@ -53,7 +53,7 @@ class AlertStore:
         supabase_url: str | None = None,
         supabase_key: str | None = None,
     ) -> None:
-        
+
       # 제목: trailing slash 방어 처리
       # 내용: URL 끝 슬래시 제거 — //rest/v1/... 이중 슬래시로 인한 PGRST125 방지
         raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
@@ -78,7 +78,7 @@ class AlertStore:
 
         if not self._url or not self._key:
             raise RuntimeError("SUPABASE_URL/SUPABASE_KEY 환경변수 미설정")
-              
+
         from supabase import create_client  # type: ignore[import]
         self._client = create_client(self._url, self._key)
         return self._client
