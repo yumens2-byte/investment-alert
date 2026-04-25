@@ -29,48 +29,45 @@ def configure_root_logger(
 ) -> None:
     """
     제목: 루트 로거 초기 설정
-    내용: 앱 시작 시 1회만 호출하여 전역 로그 포맷/레벨을 설정합니다.
-          log_file이 지정되면 콘솔 + 파일 동시 출력합니다.
+    내용: 콘솔 핸들러는 최초 1회만 설정합니다.
+          파일 핸들러는 log_file이 지정될 때마다 추가합니다.
+          import 단계에서 _root_configured가 True가 되어도
+          log_file 지정 시 파일 핸들러는 항상 정상 추가됩니다.
 
     처리 플로우:
-      1. 중복 설정 방지 (_root_configured 체크)
-      2. 로그 레벨 결정 (인자 > 환경변수 > INFO)
-      3. stdout 핸들러 구성
-      4. 파일 핸들러 구성 (log_file 지정 시)
-      5. 루트 로거에 연결
+      1. 콘솔 핸들러: _root_configured=False일 때만 1회 추가
+      2. 파일 핸들러: log_file 지정 시 항상 추가 (_root_configured 무관)
 
     Args:
         level: 강제 로그 레벨 ("DEBUG"/"INFO"/"WARNING"/"ERROR")
         log_file: 로그 파일 경로 (None이면 콘솔만 출력)
     """
     global _root_configured
-    if _root_configured:
-        return
-
-    effective_level = level or os.getenv("LOG_LEVEL", "INFO")
-    log_level = getattr(logging, effective_level.upper(), logging.INFO)
 
     formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
-
-    # 제목: stdout 핸들러
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-
     root = logging.getLogger()
-    root.setLevel(log_level)
-    root.handlers.clear()
-    root.addHandler(stream_handler)
 
-    # 제목: 파일 핸들러 (log_file 지정 시)
-    # 내용: 디렉토리 자동 생성 + UTF-8 인코딩 (한글 안전)
+    # 제목: 콘솔 핸들러 — 최초 1회만 설정
+    if not _root_configured:
+        effective_level = level or os.getenv("LOG_LEVEL", "INFO")
+        log_level = getattr(logging, effective_level.upper(), logging.INFO)
+
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+
+        root.setLevel(log_level)
+        root.handlers.clear()
+        root.addHandler(stream_handler)
+        _root_configured = True
+
+    # 제목: 파일 핸들러 — log_file 지정 시 항상 추가
+    # 내용: import 순서와 무관하게 main()에서 호출 시 반드시 추가됨
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
-
-    _root_configured = True
 
 
 def get_logger(name: str) -> logging.Logger:
