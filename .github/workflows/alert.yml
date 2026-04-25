@@ -2,7 +2,7 @@ name: Alert Pipeline
 
 "on":
   schedule:
-    - cron: '*/59 * * * *'
+    - cron: '*/45 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
