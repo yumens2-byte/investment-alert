@@ -60,11 +60,11 @@ class AlertStore:
             supabase_url: Supabase 프로젝트 URL (None이면 환경변수 사용)
             supabase_key: Supabase anon/service key (None이면 환경변수 사용) 
         """
-            raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
-            self._url = raw_url.rstrip("/") if raw_url else ""
-            self._key = supabase_key or os.getenv("SUPABASE_KEY", "")
-            self._client: object | None = None
-            logger.info(f"[AlertStore] v{VERSION} 초기화")
+      raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
+      self._url = raw_url.rstrip("/") if raw_url else ""
+      self._key = supabase_key or os.getenv("SUPABASE_KEY", "")
+      self._client: object | None = None
+      logger.info(f"[AlertStore] v{VERSION} 초기화")
 
     def _get_client(self) -> object:
         """
