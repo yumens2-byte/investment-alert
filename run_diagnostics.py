@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import os
-import traceback
 from datetime import UTC, datetime
 
 import feedparser
@@ -172,14 +171,14 @@ def check_supabase() -> None:
                 for i, row in enumerate(data, 1):
                     if table == "ia_alert_history":
                         _row(f"  [{i}] alert_id", str(row.get("alert_id", ""))[:16])
-                        _row(f"      level", row.get("level", ""))
-                        _row(f"      score", row.get("score", ""))
-                        _row(f"      created_at", row.get("created_at", ""))
+                        _row("      level", row.get("level", ""))
+                        _row("      score", row.get("score", ""))
+                        _row("      created_at", row.get("created_at", ""))
                     elif table == "ia_cooldown_state":
                         _row(f"  [{i}] level", row.get("level", ""))
-                        _row(f"      cooldown_until", row.get("cooldown_until", ""))
+                        _row("      cooldown_until", row.get("cooldown_until", ""))
             elif resp.status_code == 404:
-                _err(f"404 — PGRST125: 테이블 접근 불가")
+                _err("404 — PGRST125: 테이블 접근 불가")
                 _err(f"응답: {resp.text[:200]}")
                 _warn("SUPABASE_URL 끝에 '/' 또는 '/rest/v1' 포함 여부 확인 필요")
             elif resp.status_code == 401:

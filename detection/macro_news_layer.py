@@ -24,6 +24,7 @@ from typing import Literal
 from collectors.base import CollectorEvent
 from collectors.news_collector import NewsCollector
 from collectors.youtube_collector import YouTubeCollector
+from config.market_calendar import get_market_profile, get_threshold_for_profile
 from config.settings import LEVEL_THRESHOLDS, TIER_WEIGHTS
 from core.logger import get_logger
 
@@ -165,8 +166,18 @@ class MacroNewsLayer:
         # Step 4: 건강도 계산
         health_score = self._compute_health_score(news_events, youtube_events)
 
-        # Step 5: 레벨 판정
-        level, reasoning = self._judge_level(final_score, news_events, health_score, youtube_events)
+        # Step 4.5: FR-02 장중/장외 프로파일 자동 전환
+        market_profile = get_market_profile()
+        dynamic_thresholds = get_threshold_for_profile(market_profile)
+        logger.info(
+            f"[MacroNewsLayer] 시장 프로파일: {market_profile} "
+            f"(L1임계={dynamic_thresholds['l1_score']}, L2임계={dynamic_thresholds['l2_score']})"
+        )
+
+        # Step 5: 레벨 판정 (동적 임계값 적용)
+        level, reasoning = self._judge_level(
+            final_score, news_events, health_score, youtube_events, dynamic_thresholds
+        )
 
         logger.info(
             f"[MacroNewsLayer] 완료: score={final_score:.2f} "
@@ -291,26 +302,71 @@ class MacroNewsLayer:
         youtube_events: list[CollectorEvent],
     ) -> float:
         """
-        제목: 데이터 건강도 계산
-        내용: 수집 결과의 신뢰도를 0.0~1.0 범위로 나타냅니다.
-              뉴스 70% + YouTube 30% 가중 합산.
-              레벨 판정에서 건강도 미달 시 강등 처리에 사용됩니다.
+        제목: 데이터 건강도 계산 v2 (FR-03 다요인화)
+        내용: 4개 요소 가중 합산으로 수집 품질을 평가합니다.
 
         처리 플로우:
-          - 뉴스 이벤트 존재 여부: 1.0 (있음) / 0.0 (없음) → 70% 반영
-          - YouTube 이벤트 존재 여부: 1.0 / 0.0 → 30% 반영
+          - source_diversity (0.35): 뉴스 Tier 다양성 (S/A/B 혼합도)
+          - recency        (0.25): 최신성 (1시간 내 이벤트 비율)
+          - cross_val      (0.20): 복수소스 교차검증 비율
+          - dedup          (0.20): 중복 제거 품질 (source_count 분포)
 
         Args:
             news_events: 수집된 뉴스 이벤트
             youtube_events: 수집된 YouTube 이벤트
 
         Returns:
-            float: 0.0 ~ 1.0 건강도 점수
+            float: 0.0 ~ 1.0 건강도 점수 v2
         """
-        news_health = 1.0 if news_events else 0.0
-        youtube_health = 1.0 if youtube_events else 0.0
+        from datetime import UTC, datetime, timedelta
 
-        return news_health * 0.7 + youtube_health * 0.3
+        all_events = news_events + youtube_events
+        if not all_events:
+            return 0.0
+
+        # ── 요소 1: 소스 다양성 (0.35) ─────────────────────────
+        # 내용: 뉴스 Tier S/A/B가 혼합될수록 높은 점수
+        tiers = {e.tier for e in news_events if e.tier}
+        diversity_map = {frozenset(): 0.0, frozenset(["S"]): 0.8,
+                         frozenset(["A"]): 0.5, frozenset(["B"]): 0.3,
+                         frozenset(["S", "A"]): 1.0, frozenset(["A", "B"]): 0.7,
+                         frozenset(["S", "B"]): 0.8, frozenset(["S", "A", "B"]): 1.0}
+        source_diversity = diversity_map.get(frozenset(tiers), 0.5)
+        # YouTube가 있으면 다양성 보너스 +0.1 (상한 1.0)
+        if youtube_events:
+            source_diversity = min(source_diversity + 0.1, 1.0)
+
+        # ── 요소 2: 최신성 (0.25) ──────────────────────────────
+        # 내용: 1시간 이내 이벤트 비율
+        now = datetime.now(UTC)
+        cutoff_1h = now - timedelta(hours=1)
+        recent_count = sum(
+            1 for e in all_events
+            if e.published_at.tzinfo is not None and e.published_at >= cutoff_1h
+        )
+        recency = recent_count / len(all_events) if all_events else 0.0
+
+        # ── 요소 3: 교차검증 비율 (0.20) ───────────────────────
+        # 내용: source_count > 1인 이벤트 비율
+        cross_count = sum(1 for e in news_events if e.source_count > 1)
+        cross_val = cross_count / len(news_events) if news_events else 0.0
+
+        # ── 요소 4: 중복 제거 품질 (0.20) ─────────────────────
+        # 내용: 동일 topic_hash 내 source_count가 높을수록 품질 높음
+        # source_count 평균이 높으면 교차검증이 잘 된 것 → 품질 높음
+        if news_events:
+            avg_source_count = sum(e.source_count for e in news_events) / len(news_events)
+            dedup = min(avg_source_count / 3.0, 1.0)  # 3소스 이상이면 만점
+        else:
+            dedup = 0.3  # YouTube만 있어도 기본 점수
+
+        health_v2 = (
+            0.35 * source_diversity
+            + 0.25 * recency
+            + 0.20 * cross_val
+            + 0.20 * dedup
+        )
+        return round(min(health_v2, 1.0), 4)
 
     def _judge_level(
         self,
@@ -318,6 +374,7 @@ class MacroNewsLayer:
         news_events: list[CollectorEvent],
         health_score: float,
         youtube_events: list[CollectorEvent] | None = None,
+        thresholds: dict[str, float] | None = None,
     ) -> tuple[AlertLevel, str]:
         """
         제목: Alert 레벨 판정
@@ -341,7 +398,8 @@ class MacroNewsLayer:
         Returns:
             tuple[AlertLevel, str]: (레벨, 판정 근거)
         """
-        th = self.thresholds
+        # 제목: 동적 임계값 적용 (FR-02)
+        th = thresholds if thresholds is not None else self.thresholds
 
         # ── 1. Tier S auto_l1 이벤트 → 무조건 L1 ─────────────
         tier_s_events = [e for e in news_events if e.auto_l1]

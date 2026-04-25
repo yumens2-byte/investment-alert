@@ -179,6 +179,40 @@ class AlertEngine:
             except Exception as e:
                 logger.warning(f"[AlertEngine] 감사로그 저장 실패 (발행은 계속): {e}")
 
+        # ── FR-04: topic_hash 중복 억제 ──────────────────────────
+        # 내용: 동일 주제가 90분 내 재감지되면 발행 억제 (요약 발행 신호 포함)
+        if self.alert_store and level != "NONE" and not is_cooldown:
+            topic_hash = self._compute_topic_hash(result)
+            if topic_hash:
+                try:
+                    topic_active = self.alert_store.is_topic_cooldown_active(topic_hash)
+                    if topic_active:
+                        logger.info(
+                            f"[AlertEngine] topic 쿨다운 활성 — 발행 억제: {topic_hash[:8]}"
+                        )
+                        signal.publish_x = False
+                        signal.publish_tg_free = False
+                        signal.publish_tg_paid = False
+                        signal.is_cooldown_active = True
+                    else:
+                        # 신규/재감지 등록
+                        keywords = ", ".join(
+                            kw for e in result.news_events
+                            for kw in e.matched_keywords[:3]
+                        )[:200]
+                        topic_result = self.alert_store.upsert_topic_cooldown(
+                            topic_hash=topic_hash,
+                            level=level,
+                            keywords=keywords,
+                        )
+                        if topic_result.get("needs_summary"):
+                            logger.info(
+                                f"[AlertEngine] 요약 업데이트 발행 신호: {topic_hash[:8]} "
+                                f"(감지 {topic_result['seen_count']}회)"
+                            )
+                except Exception as e:
+                    logger.warning(f"[AlertEngine] topic 쿨다운 처리 실패 (계속): {e}")
+
         logger.info(
             f"[AlertEngine] AlertSignal 생성: id={alert_id[:8]}, level={level}, "
             f"cooldown={is_cooldown}, publish=(x={signal.publish_x}, "
@@ -186,3 +220,24 @@ class AlertEngine:
         )
 
         return signal
+
+    def _compute_topic_hash(self, result: MacroNewsResult) -> str | None:
+        """
+        제목: MacroNewsResult에서 topic_hash 산출
+        내용: FR-04 주제 해시. 상위 뉴스의 matched_keywords를 정렬/결합하여 MD5.
+              키워드가 없으면 None 반환.
+
+        Args:
+            result: MacroNewsResult
+
+        Returns:
+            str | None: 8자리 해시 또는 None
+        """
+        import hashlib
+        keywords: list[str] = []
+        for e in result.news_events[:3]:
+            keywords.extend(e.matched_keywords[:3])
+        if not keywords:
+            return None
+        key = "|".join(sorted(set(keywords)))
+        return hashlib.md5(key.encode()).hexdigest()[:8]  # noqa: S324

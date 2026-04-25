@@ -35,6 +35,12 @@ COOLDOWN_MINUTES: dict[str, int] = {
     "L3": 120,
 }
 
+# 제목: 주제 해시 쿨다운 (FR-04)
+# 내용: 동일 topic_hash 90분 내 재발행 금지, 2회 이상 감지 시 요약 발행
+TOPIC_COOLDOWN_MINUTES: int = 90
+TOPIC_SUMMARY_THRESHOLD: int = 2  # 이 횟수 이상 감지 시 요약 업데이트 발행
+TABLE_TOPIC_COOLDOWN = "ia_topic_cooldown"
+
 
 class AlertStore:
     """
@@ -53,9 +59,15 @@ class AlertStore:
         supabase_url: str | None = None,
         supabase_key: str | None = None,
     ) -> None:
+        """
+        제목: AlertStore 초기화
 
-      # 제목: trailing slash 방어 처리
-      # 내용: URL 끝 슬래시 제거 — //rest/v1/... 이중 슬래시로 인한 PGRST125 방지
+        Args:
+            supabase_url: Supabase 프로젝트 URL (None이면 환경변수 사용)
+            supabase_key: Supabase anon/service key (None이면 환경변수 사용)
+        """
+        # 제목: trailing slash 방어 처리
+        # 내용: URL 끝 슬래시 제거 — //rest/v1/... 이중 슬래시로 인한 PGRST125 방지
         raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
         self._url = raw_url.rstrip("/") if raw_url else ""
         self._key = supabase_key or os.getenv("SUPABASE_KEY", "")
@@ -258,4 +270,130 @@ class AlertStore:
             return True
         except Exception as e:
             logger.error(f"[AlertStore] 쿨다운 설정 실패: {e}")
+            return False
+
+    # ────────────────────────────────────────────────────
+    # FR-04: topic_hash 기반 중복 억제
+    # ────────────────────────────────────────────────────
+    def is_topic_cooldown_active(self, topic_hash: str) -> bool:
+        """
+        제목: 주제 해시 쿨다운 활성 여부
+        내용: 동일 topic_hash가 90분 내 이미 발행됐으면 True 반환.
+
+        Args:
+            topic_hash: 주제 해시 키
+
+        Returns:
+            bool: 쿨다운 중이면 True
+        """
+        try:
+            client = self._get_client()
+            result = (
+                client.table(TABLE_TOPIC_COOLDOWN)
+                .select("cooldown_until, seen_count")
+                .eq("topic_hash", topic_hash)
+                .execute()
+            )
+            rows = result.data
+            if not rows:
+                return False
+
+            from dateutil.parser import parse as dateutil_parse
+            cooldown_until = dateutil_parse(rows[0]["cooldown_until"])
+            if cooldown_until.tzinfo is None:
+                cooldown_until = cooldown_until.replace(tzinfo=UTC)
+
+            return cooldown_until > datetime.now(UTC)
+        except Exception as e:
+            logger.warning(f"[AlertStore] topic 쿨다운 조회 실패 (False 반환): {e}")
+            return False
+
+    def upsert_topic_cooldown(
+        self,
+        topic_hash: str,
+        level: str,
+        keywords: str = "",
+    ) -> dict:
+        """
+        제목: 주제 해시 쿨다운 등록/업데이트
+        내용: 신규이면 INSERT, 기존이면 seen_count 증가 + cooldown_until 갱신.
+              seen_count >= TOPIC_SUMMARY_THRESHOLD이면 요약 발행 필요 신호 반환.
+
+        Args:
+            topic_hash: 주제 해시 키
+            level: 감지 레벨
+            keywords: 매칭된 키워드 문자열
+
+        Returns:
+            dict: {'is_new': bool, 'seen_count': int, 'needs_summary': bool}
+        """
+        try:
+            client = self._get_client()
+            now = datetime.now(UTC)
+            cooldown_until = now + timedelta(minutes=TOPIC_COOLDOWN_MINUTES)
+
+            # 기존 레코드 조회
+            result = (
+                client.table(TABLE_TOPIC_COOLDOWN)
+                .select("id, seen_count, summary_sent")
+                .eq("topic_hash", topic_hash)
+                .execute()
+            )
+            rows = result.data
+
+            if not rows:
+                # 신규 등록
+                client.table(TABLE_TOPIC_COOLDOWN).insert({
+                    "topic_hash": topic_hash,
+                    "level": level,
+                    "first_seen_at": now.isoformat(),
+                    "last_seen_at": now.isoformat(),
+                    "seen_count": 1,
+                    "cooldown_until": cooldown_until.isoformat(),
+                    "keywords": keywords,
+                    "summary_sent": False,
+                }).execute()
+                logger.info(f"[AlertStore] topic 쿨다운 신규 등록: {topic_hash[:8]}")
+                return {"is_new": True, "seen_count": 1, "needs_summary": False}
+            else:
+                # 기존 업데이트
+                old_count = rows[0].get("seen_count", 1)
+                new_count = old_count + 1
+                summary_sent = rows[0].get("summary_sent", False)
+                needs_summary = (new_count >= TOPIC_SUMMARY_THRESHOLD) and not summary_sent
+
+                client.table(TABLE_TOPIC_COOLDOWN).update({
+                    "last_seen_at": now.isoformat(),
+                    "seen_count": new_count,
+                    "cooldown_until": cooldown_until.isoformat(),
+                    "updated_at": now.isoformat(),
+                }).eq("topic_hash", topic_hash).execute()
+
+                logger.info(
+                    f"[AlertStore] topic 쿨다운 업데이트: {topic_hash[:8]} "
+                    f"(seen={new_count}, needs_summary={needs_summary})"
+                )
+                return {"is_new": False, "seen_count": new_count, "needs_summary": needs_summary}
+        except Exception as e:
+            logger.error(f"[AlertStore] topic 쿨다운 업데이트 실패: {e}")
+            return {"is_new": True, "seen_count": 1, "needs_summary": False}
+
+    def mark_topic_summary_sent(self, topic_hash: str) -> bool:
+        """
+        제목: 주제 요약 발행 완료 마킹
+
+        Args:
+            topic_hash: 주제 해시 키
+
+        Returns:
+            bool: 성공 시 True
+        """
+        try:
+            client = self._get_client()
+            client.table(TABLE_TOPIC_COOLDOWN).update(
+                {"summary_sent": True, "updated_at": datetime.now(UTC).isoformat()}
+            ).eq("topic_hash", topic_hash).execute()
+            return True
+        except Exception as e:
+            logger.error(f"[AlertStore] topic summary 마킹 실패: {e}")
             return False

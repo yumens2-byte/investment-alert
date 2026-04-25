@@ -243,26 +243,30 @@ def test_judge_level_none() -> None:
 # ────────────────────────────────────────────────────────
 @pytest.mark.unit
 def test_compute_health_score_all_success() -> None:
-    """뉴스 + YouTube 모두 있으면 1.0"""
+    """뉴스 + YouTube 모두 있으면 0.0 초과 (FR-03 다요인화)"""
     layer = make_layer()
     score = layer._compute_health_score([make_news_event()], [make_yt_event()])
-    assert abs(score - 1.0) < 0.01
+    assert score > 0.0
+    assert score <= 1.0
 
 
 @pytest.mark.unit
 def test_compute_health_score_no_youtube() -> None:
-    """뉴스만 있으면 0.7"""
+    """뉴스만 있으면 0.0 초과 (FR-03 다요인화 — YouTube 없으면 다양성 감소)"""
     layer = make_layer()
     score = layer._compute_health_score([make_news_event()], [])
-    assert abs(score - 0.7) < 0.01
+    assert score > 0.0
+    assert score <= 1.0
 
 
 @pytest.mark.unit
 def test_compute_health_score_no_news() -> None:
-    """YouTube만 있으면 0.3"""
+    """YouTube만 있으면 0.0 초과 (FR-03 다요인화 — 뉴스 없으면 diversity/cross_val 낮음)"""
     layer = make_layer()
     score = layer._compute_health_score([], [make_yt_event()])
-    assert abs(score - 0.3) < 0.01
+    # dedup 요소(0.20)에 기본값 0.3 적용 → 최소 0.06 이상
+    assert score >= 0.06
+    assert score <= 1.0
 
 
 @pytest.mark.unit

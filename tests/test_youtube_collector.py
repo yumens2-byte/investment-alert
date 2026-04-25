@@ -113,7 +113,7 @@ def test_parse_channels_invalid_format(collector: YouTubeCollector) -> None:
 
 @pytest.mark.unit
 def test_parse_channels_empty_string() -> None:
-    """빈 문자열 -> 빈 리스트"""
+    """빈 문자열 → 빈 리스트"""
     c = YouTubeCollector(channels_str="")
     assert c.channels == []
 
@@ -157,10 +157,28 @@ def test_match_keywords_kr_no_match(collector: YouTubeCollector) -> None:
 # 수집 윈도우
 # ────────────────────────────────────────────────────────
 @pytest.mark.unit
-def test_within_48h_true(collector: YouTubeCollector) -> None:
-    """30시간 전은 48h 범위 내"""
+def test_within_48h_true() -> None:
+    """30시간 전은 48h 레거시 모드에서 범위 내"""
+    c = YouTubeCollector(channels_str="", today_only=False)
     dt = datetime.now(UTC) - timedelta(hours=30)
-    assert collector._is_within_window(dt) is True
+    assert c._is_within_window(dt) is True
+
+
+@pytest.mark.unit
+def test_today_only_mode() -> None:
+    """today_only=True이면 오늘 UTC 00:00 이후만 통과"""
+    c = YouTubeCollector(channels_str="", today_only=True)
+    from datetime import UTC, datetime
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # 오늘 1시간 후 → 통과
+    import datetime as dt_module
+    recent = today_start + dt_module.timedelta(hours=1)
+    assert c._is_within_window(recent) is True
+
+    # 어제 23:59 → 제외
+    yesterday = today_start - dt_module.timedelta(minutes=1)
+    assert c._is_within_window(yesterday) is False
 
 
 @pytest.mark.unit
@@ -183,7 +201,7 @@ def test_filter_exclusion_pattern_removed(collector: YouTubeCollector) -> None:
 
 @pytest.mark.unit
 def test_filter_exclusion_today_summary(collector: YouTubeCollector) -> None:
-    """오늘의 요약 패턴 - 실제 로그 오탐 케이스 (2026-04-25)"""
+    """오늘의 요약 패턴 — 실제 로그 오탐 케이스 (2026-04-25)"""
     event = make_yt_event(
         title="【미국 증시 오늘의 요약】 미 증시 사상 최고치 돌파!  인텔 23% 폭등",
         keyword_score=3.5,
@@ -195,9 +213,9 @@ def test_filter_exclusion_today_summary(collector: YouTubeCollector) -> None:
 
 @pytest.mark.unit
 def test_filter_exclusion_date_briefing(collector: YouTubeCollector) -> None:
-    """날짜 브리핑 패턴 - 실제 로그 오탐 케이스 (2026-04-25)"""
+    """날짜 브리핑 패턴 — 실제 로그 오탐 케이스 (2026-04-25)"""
     event = make_yt_event(
-        title="[26년 04월 24일 금] 인텔, 어닝 서프라이즈 | 이란 외무장관 방문",
+        title="[26년 04월 24일 금] 인텔, 어닝 서프라이즈 ｜ 이란 외무장관 방문",
         keyword_score=3.5,
         matched_keywords=["속보"],
     )
@@ -207,9 +225,11 @@ def test_filter_exclusion_date_briefing(collector: YouTubeCollector) -> None:
 
 @pytest.mark.unit
 def test_filter_exclusion_does_not_block_real_urgent(collector: YouTubeCollector) -> None:
-    """오늘의 요약 형식이면 긴급 키워드 있어도 제외 (제외 패턴 우선)"""
+    """실제 긴급 이벤트는 제외 패턴에 해당해도 키워드로 통과해야 함 — 아님, 제외가 우선"""
+    # 긴급 내용이라도 '오늘의 요약' 형식이면 제외
     event = make_yt_event(title="【미국 증시 오늘의 요약】 서킷브레이커 발동 긴급속보")
     result = collector._filter_by_keywords([event])
+    # 오늘의 요약 패턴이 우선 적용 → 제외
     assert len(result) == 0
 
 
@@ -225,5 +245,6 @@ def test_filter_valid_keyword_passed(collector: YouTubeCollector) -> None:
 @pytest.mark.unit
 def test_channel_weight_reflected_in_event(collector: YouTubeCollector) -> None:
     """채널 가중치가 CollectorEvent.channel_weight에 반영됨"""
+    # _parse_channels를 통해 전인구(1.3)가 올바르게 설정되는지
     jeoninku = next(c for c in collector.channels if c["name"] == "전인구경제연구소")
     assert jeoninku["weight"] == 1.3
