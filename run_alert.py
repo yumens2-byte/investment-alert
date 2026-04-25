@@ -1,6 +1,6 @@
 """
 제목: investment-alert 파이프라인 엔트리포인트
-내용: MacroNewsLayer(감지) → AlertEngine(Signal 생성) → Publisher(발행) →
+내용: MacroNewsLayer(감지) -> AlertEngine(Signal 생성) -> Publisher(발행) ->
       AlertStore(쿨다운 설정 + 발행결과 기록) 전체 파이프라인을 실행합니다.
 
 주요 함수:
@@ -32,20 +32,23 @@ def main() -> None:
           각 단계의 실패는 격리하여 후속 단계에 영향을 주지 않습니다.
 
     처리 플로우:
-      1. 의존성 초기화 (Collector, Store, Publisher)
-      2. MacroNewsLayer.detect() — 뉴스/YouTube 감지
-      3. AlertEngine.process() — AlertSignal 생성 + 감사로그 저장
-      4. NONE 또는 쿨다운 → 발행 스킵
-      5. L1/L2/L3 → 채널별 발행 (X / TG Free / TG Paid)
-      6. AlertStore.update_publish_result() — 발행 결과 기록
-      7. AlertStore.set_cooldown() — 쿨다운 설정
+      1. 로거 초기화 (콘솔 + 파일 동시 출력)
+      2. 의존성 초기화 (Collector, Store, Publisher)
+      3. MacroNewsLayer.detect() - 뉴스/YouTube 감지
+      4. AlertEngine.process() - AlertSignal 생성 + 감사로그 저장
+      5. 전체 수집 데이터 로그 출력 (DataLogger)
+      6. NONE 또는 쿨다운 -> 발행 스킵
+      7. L1/L2/L3 -> 채널별 발행 (X / TG Free / TG Paid)
+      8. AlertStore.update_publish_result() - 발행 결과 기록
+      9. AlertStore.set_cooldown() - 쿨다운 설정
     """
     from datetime import UTC, datetime
+
     _log_ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     _log_file = f"logs/run_alert_{_log_ts}.log"
     configure_root_logger(log_file=_log_file)
     logger = get_logger(__name__)
-    logger.info(f"[run_alert] v{VERSION} 시작 — 로그파일: {_log_file}")
+    logger.info(f"[run_alert] v{VERSION} 시작 - 로그파일: {_log_file}")
 
     # ── Step 1: 의존성 초기화 ────────────────────────────────
     alert_store = AlertStore()
@@ -71,22 +74,22 @@ def main() -> None:
     # ── Step 3: AlertSignal 생성 ─────────────────────────────
     signal = alert_engine.process(result)
 
-    # ── Step 3-LOG: 전체 수집 데이터 로그 출력 ─────────────────
-    logger.info("[run_alert] Step 3-LOG: 전체 수집 데이터 로그 출력")
+    # ── Step 4: 전체 수집 데이터 로그 출력 ───────────────────
+    logger.info("[run_alert] Step 4-LOG: 전체 수집 데이터 로그 출력")
     data_logger = DataLogger()
     data_logger.log_all(result=result, signal=signal)
 
-    # ── Step 4: 발행 판단 ────────────────────────────────────
+    # ── Step 5: 발행 판단 ────────────────────────────────────
     if result.level == "NONE":
-        logger.info("[run_alert] NONE 레벨 — 발행 스킵")
+        logger.info("[run_alert] NONE 레벨 - 발행 스킵")
         sys.exit(0)
 
     if signal.is_cooldown_active:
-        logger.info(f"[run_alert] {signal.level} 쿨다운 활성 — 발행 스킵")
+        logger.info(f"[run_alert] {signal.level} 쿨다운 활성 - 발행 스킵")
         sys.exit(0)
 
-    # ── Step 5: 채널별 발행 ──────────────────────────────────
-    logger.info(f"[run_alert] Step 5: {signal.level} 발행 시작")
+    # ── Step 6: 채널별 발행 ──────────────────────────────────
+    logger.info(f"[run_alert] Step 6: {signal.level} 발행 시작")
 
     x_ok = tg_free_ok = tg_paid_ok = False
     x_err = tg_free_err = tg_paid_err = None
@@ -131,7 +134,7 @@ def main() -> None:
             tg_paid_err = str(e)
             logger.error(f"[run_alert] TG Paid 발행 실패: {e}")
 
-    # ── Step 6: 발행 결과 기록 ───────────────────────────────
+    # ── Step 7: 발행 결과 기록 ───────────────────────────────
     alert_store.update_publish_result(
         alert_id=signal.alert_id,
         x_published=x_ok,
@@ -142,7 +145,7 @@ def main() -> None:
         tg_paid_error=tg_paid_err,
     )
 
-    # ── Step 7: 쿨다운 설정 ──────────────────────────────────
+    # ── Step 8: 쿨다운 설정 ──────────────────────────────────
     if tg_free_ok or tg_paid_ok or x_ok:
         alert_store.set_cooldown(level=signal.level, alert_id=signal.alert_id)
         logger.info(f"[run_alert] {signal.level} 쿨다운 설정 완료")
