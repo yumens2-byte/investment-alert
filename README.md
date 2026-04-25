@@ -1,51 +1,109 @@
-# ────────────────────────────────────────────────────────
-# investment-alert 환경변수 템플릿
-# ────────────────────────────────────────────────────────
-# 사용 방법:
-#   cp .env.example .env
-#   각 값을 실제 값으로 채운 후 저장
-# ────────────────────────────────────────────────────────
+# investment-alert
 
-# ── YouTube 채널 설정 ──────────────────────────────────
-# 포맷: "이름1:채널ID1,이름2:채널ID2,..."
-# 예시:
+미국 증시 긴급 Alert 감지 시스템 — 뉴스 및 YouTube 기반 실시간 시장 변동 감지.
 
+## 개요
 
-# ── AI API 키 ─────────────────────────────────────────
-# Gemini API (Impact Scoring 용)
-GEMINI_API_KEY=
-GEMINI_API_SUB_KEY=
-GEMINI_API_SUB_SUB_KEY=
+Investment OS 생태계의 Alert 전담 서브시스템. 뉴스 및 유튜버 콘텐츠를 병렬 수집·분석하여 L1(CRITICAL)/L2(HIGH)/L3(MEDIUM) 레벨의 Alert를 자동 판정합니다.
 
-# Claude API (fallback 용, 선택)
-ANTHROPIC_API_KEY=
+## 아키텍처
 
-# ── 발행 API ───────────────────────────────────────────
-# X (Twitter) API
-X_API_KEY=
-X_API_SECRET=
-X_ACCESS_TOKEN=
-X_ACCESS_TOKEN_SECRET=
+```
+┌──────────────────────────────────────────────────────┐
+│           MacroNewsLayer (통합 감지 레이어)             │
+├──────────────────────────────────────────────────────┤
+│                                                      │
+│  ┌──────────────────┐     ┌──────────────────┐      │
+│  │  NewsCollector   │     │ YouTubeCollector │      │
+│  │                  │     │                  │      │
+│  │  ▸ Tier S/A/B    │     │  ▸ 4 채널        │      │
+│  │  ▸ RSS 기반       │     │  ▸ 48시간 윈도우 │      │
+│  │  ▸ 키워드 필터     │     │  ▸ 한글 키워드    │      │
+│  └────────┬─────────┘     └────────┬─────────┘      │
+│           │                        │                 │
+│           └──────────┬─────────────┘                 │
+│                      ▼                               │
+│           ┌──────────────────────┐                   │
+│           │   NewsValidator      │                   │
+│           │   (추측성/재탕 제외)   │                   │
+│           └──────────┬───────────┘                   │
+│                      ▼                               │
+│           ┌──────────────────────┐                   │
+│           │   Score 산출          │                   │
+│           │   Tier × Source      │                   │
+│           │   × YouTube Bonus    │                   │
+│           └──────────┬───────────┘                   │
+│                      ▼                               │
+│           ┌──────────────────────┐                   │
+│           │   L1/L2/L3 판정      │                   │
+│           └──────────────────────┘                   │
+└──────────────────────────────────────────────────────┘
+```
 
-# Telegram Bot
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHANNEL_ID=
+## 프로젝트 구조
 
-# ── 운영 제어 ──────────────────────────────────────────
-# true=모의 실행, false=실 발행
-DRY_RUN=true
+```
+investment-alert/
+├── collectors/            # 데이터 수집
+│   ├── base.py            #   BaseCollector + CollectorEvent
+│   ├── news_collector.py  #   Day 2
+│   └── youtube_collector.py #   Day 3
+├── validators/            # 이벤트 검증
+│   └── news_validator.py  #   Day 2
+├── detection/             # 감지 레이어
+│   └── macro_news_layer.py #   Day 4
+├── config/
+│   └── settings.py        # 환경변수 및 상수
+├── core/
+│   ├── exceptions.py      # 커스텀 예외
+│   └── logger.py          # 로거
+├── tests/                 # pytest 테스트
+├── pyproject.toml         # ruff 설정
+├── pytest.ini             # pytest 설정 (80% threshold)
+├── requirements.txt       # 의존성
+└── .github/workflows/
+    └── test.yml           # CI (ruff + pytest)
+```
 
-# true=휴무일도 실행
-FORCE_RUN=false
+## 빠른 시작
 
-# 로그 레벨: DEBUG, INFO, WARNING, ERROR
-LOG_LEVEL=INFO
+```bash
+# 1. 의존성 설치
+python -m venv venv
+. venv/bin/activate
+pip install -r requirements.txt
 
-# ── 임계값 (옵션 — 기본값 사용 시 생략 가능) ───────────
-# MacroNewsLayer 레벨 판정 임계값
-THRESHOLD_L1_SCORE=7.0
-THRESHOLD_L2_SCORE=5.0
-THRESHOLD_L3_SCORE=3.0
-THRESHOLD_HEALTH_L1=0.90
-THRESHOLD_HEALTH_L2=0.80
-THRESHOLD_HEALTH_L3=0.70
+# 2. 환경변수 설정
+cp .env.example .env
+# .env 파일 편집
+
+# 3. 테스트 (GTT팀 공통지침 11 준수)
+ruff check . --line-length=100
+pytest tests/ -v
+```
+
+## 개발 원칙
+
+1. **반말 금지 (대화)** · **정확성 > 속도**
+2. **VERSION 상수 필수** (모든 모듈) + 실행 시작 로그에 버전 출력 (GTT팀 지침 5)
+3. **ruff + pytest 세트 통과** (GTT팀 지침 11)
+4. **coverage ≥ 80%** (pytest.ini fail_under 강제)
+5. **주석 표준**: 파일 헤더 / 클래스 / 함수 / 인라인 모두 `제목 + 내용` 포함
+
+## Alert 레벨 판정 규칙
+
+| 레벨 | 조건 |
+|------|------|
+| L1 (CRITICAL) | Tier S 이벤트 OR (score ≥ 7.0 AND source_count ≥ 2 AND health ≥ 0.90) |
+| L2 (HIGH) | 5.0 ≤ score < 7.0 OR 유튜브 단독 긴급 (ai_score ≥ 6.0) |
+| L3 (MEDIUM) | 3.0 ≤ score < 5.0 |
+| NONE | score < 3.0 |
+
+## 상위 허브
+
+- 자동화 허브(Notion): Investment OS — 자동화 허브
+- 세분화 허브(Notion): investment Alert - 세분화
+
+## 라이선스
+
+Private — EDT Investment Team
