@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      DRY_RUN: "true"
+      DRY_RUN: ${{ secrets.DRY_RUN }}
       YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
