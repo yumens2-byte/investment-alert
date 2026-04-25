@@ -1,33 +1,55 @@
-[pytest]
 # ────────────────────────────────────────────────────────
-# pytest 설정
-# Day 1 완료 보고서의 coverage fail_under=80 준수
+# pyproject.toml
+# GTT팀 공통지침 11(ruff+pytest 세트) 완전 준수
 # ────────────────────────────────────────────────────────
-testpaths = tests
-python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
 
-# 출력 옵션
-addopts =
-    -v
-    --strict-markers
-    --tb=short
-    --cov=collectors
-    --cov=validators
-    --cov=detection
-    --cov=core
-    --cov=config
-    --cov-report=term-missing
-    --cov-report=html
-    --cov-fail-under=80
+[project]
+name = "investment-alert"
+version = "0.4.0"
+description = "미국 증시 긴급 Alert 감지 시스템"
+requires-python = ">=3.11"
 
-# 마커
-markers =
-    slow: 실행 시간 긴 테스트 (외부 API 호출 등)
-    integration: 통합 테스트 (실제 RSS/API 호출)
-    unit: 단위 테스트 (mock 기반)
+# ────────────────────────────────────────────────────────
+# ruff 설정 (공통지침 11)
+# ────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
 
-# 경고 필터
-filterwarnings =
-    ignore::DeprecationWarning
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "W",    # pycodestyle warnings
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (ruff format이 처리)
+    "B008",  # Function call in default argument
+]
+
+[tool.ruff.lint.isort]
+# 공통지침 11: known-first-party 필수 설정
+known-first-party = [
+    "publishers",
+    "db",
+    "collectors",
+    "config",
+    "core",
+    "detection",
+    "validators",
+    "tests",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # 테스트에서는 assert False 허용
+"__init__.py" = ["F401"]  # re-export 허용

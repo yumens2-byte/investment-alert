@@ -1,299 +1,198 @@
 """
-제목: Collector 내부 메서드 mock 기반 테스트
-내용: feedparser를 mock하여 _collect_tier, _entry_to_event, _collect_channel,
-      _parse_entry_date 등의 RSS 처리 로직을 외부 API 없이 테스트합니다.
-      coverage 80% 임계값 달성을 위한 보완 테스트입니다.
+제목: YouTubeCollector 단위 테스트
+내용: 채널 파싱, 한글 키워드 매칭, 가중치 적용, 제외 패턴 필터링을
+      외부 API 없이 테스트합니다.
 """
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from collectors.news_collector import NewsCollector
-from collectors.youtube_collector import YouTubeCollector
-
-
-# ────────────────────────────────────────────────────────
-# feedparser 응답 stub 헬퍼
-# ────────────────────────────────────────────────────────
-def _make_feed_entry(
-    title: str = "Emergency rate cut announced",
-    link: str = "https://reuters.com/1",
-    summary: str = "Fed makes emergency move",
-    published: str = "Thu, 24 Apr 2026 10:00:00 GMT",
-    published_parsed: time.struct_time | None = None,
-) -> MagicMock:
-    """feedparser 엔트리 mock"""
-    entry = MagicMock()
-    entry.get = lambda key, default="": {
-        "title": title,
-        "link": link,
-        "summary": summary,
-        "published": published,
-    }.get(key, default)
-    entry.published_parsed = published_parsed or time.strptime(published, "%a, %d %b %Y %H:%M:%S %Z")
-    return entry
-
-
-def _make_feed(entries: list) -> MagicMock:
-    """feedparser.parse 반환값 mock"""
-    feed = MagicMock()
-    feed.entries = entries
-    return feed
-
-
-def _make_yt_entry(
-    title: str = "긴급속보 미증시 서킷브레이커",
-    video_id: str = "abcdefg",
-    published: str = "2026-04-24T10:00:00+00:00",
-    published_parsed: time.struct_time | None = None,
-) -> MagicMock:
-    """YouTube RSS 엔트리 mock"""
-    entry = MagicMock()
-    entry.get = lambda key, default="": {
-        "title": title,
-        "yt_videoid": video_id,
-        "summary": "설명",
-        "published": published,
-    }.get(key, default)
-    entry.published_parsed = published_parsed or time.gmtime()
-    return entry
-
+from collectors.base import CollectorEvent
+from collectors.youtube_collector import (
+    KEYWORD_SCORE_CAP,
+    KEYWORD_THRESHOLD,
+    YouTubeCollector,
+)
 
 # ────────────────────────────────────────────────────────
-# NewsCollector — _collect_tier
+# Fixtures
 # ────────────────────────────────────────────────────────
-@pytest.mark.unit
-def test_collect_tier_s_returns_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tier S 수집 시 auto_l1=True 이벤트 반환"""
-    entry = _make_feed_entry()
-    feed = _make_feed([entry])
-
-    with patch("collectors.news_collector.feedparser.parse", return_value=feed):
-        collector = NewsCollector()
-        events = collector._collect_tier("S")
-
-    assert len(events) >= 0  # 소스가 있으면 이벤트 반환
-    if events:
-        assert events[0].tier == "S"
-        assert events[0].auto_l1 is True
+_CHANNELS_STR = (
+    "소수몽키:UCC3yfxS5qC6PCwDzetUuEWg,"
+    "오선의 미국 증시 라이브:UC_JJ_NhRqPKcIOj5Ko3W_3w,"
+    "전인구경제연구소:UCznImSIaxZR7fdLCICLdgaQ,"
+    "미주은:UCNnwmqZOxSuOiF3_c7mAGWA"
+)
 
 
-@pytest.mark.unit
-def test_collect_tier_empty_url_skipped() -> None:
-    """URL 없는 소스는 스킵"""
-    collector = NewsCollector(
-        source_registry={"A": {"no_url_source": {"url": None, "auto_l1": False}}}
+@pytest.fixture
+def collector() -> YouTubeCollector:
+    """채널 4개 설정된 기본 YouTubeCollector"""
+    return YouTubeCollector(channels_str=_CHANNELS_STR)
+
+
+@pytest.fixture
+def empty_collector() -> YouTubeCollector:
+    """채널 없는 YouTubeCollector"""
+    return YouTubeCollector(channels_str="")
+
+
+def make_yt_event(
+    channel_name: str = "소수몽키",
+    title: str = "긴급속보 미증시 폭락",
+    url: str = "https://youtube.com/watch?v=abc",
+    published_at: datetime | None = None,
+    channel_weight: float = 1.0,
+    keyword_score: float = 0.0,
+    matched_keywords: list | None = None,
+) -> CollectorEvent:
+    if published_at is None:
+        published_at = datetime.now(UTC) - timedelta(hours=2)
+    return CollectorEvent(
+        source_type="youtube",
+        source_name=channel_name,
+        event_id=CollectorEvent.compute_event_id(channel_name, url, title),
+        title=title,
+        summary="",
+        url=url,
+        published_at=published_at,
+        tier=None,
+        channel_weight=channel_weight,
+        auto_l1=False,
+        keyword_score=keyword_score,
+        matched_keywords=matched_keywords or [],
     )
-    events = collector._collect_tier("A")
-    assert events == []
-
-
-@pytest.mark.unit
-def test_collect_tier_feedparser_failure_continues() -> None:
-    """feedparser 예외 시 해당 소스 스킵, 다음 소스 계속"""
-    with patch("collectors.news_collector.feedparser.parse", side_effect=RuntimeError("net err")):
-        collector = NewsCollector()
-        events = collector._collect_tier("A")
-    # 예외가 propagate되지 않고 빈 리스트 반환
-    assert isinstance(events, list)
 
 
 # ────────────────────────────────────────────────────────
-# NewsCollector — _entry_to_event
+# 초기화
 # ────────────────────────────────────────────────────────
 @pytest.mark.unit
-def test_entry_to_event_valid() -> None:
-    """유효 엔트리 → CollectorEvent 정상 생성"""
-    collector = NewsCollector()
-    entry = _make_feed_entry(
-        title="Flash crash detected",
-        link="https://reuters.com/flash",
-    )
-    event = collector._entry_to_event(entry, "reuters_markets", "A", {"auto_l1": False})
-    assert event is not None
-    assert event.title == "Flash crash detected"
-    assert event.tier == "A"
-    assert event.source_type == "news"
+def test_init_with_channels(collector: YouTubeCollector) -> None:
+    """채널 4개 정상 초기화"""
+    assert len(collector.channels) == 4
 
 
 @pytest.mark.unit
-def test_entry_to_event_missing_title_returns_none() -> None:
-    """title 없는 엔트리 → None"""
-    collector = NewsCollector()
-    entry = _make_feed_entry(title="", link="https://reuters.com/1")
-    result = collector._entry_to_event(entry, "reuters_markets", "A", {})
-    assert result is None
-
-
-@pytest.mark.unit
-def test_entry_to_event_missing_url_returns_none() -> None:
-    """URL 없는 엔트리 → None"""
-    collector = NewsCollector()
-    entry = _make_feed_entry(title="Valid title", link="")
-    result = collector._entry_to_event(entry, "reuters_markets", "A", {})
-    assert result is None
-
-
-@pytest.mark.unit
-def test_entry_to_event_auto_l1_sets_score() -> None:
-    """auto_l1=True → keyword_score=5.0"""
-    collector = NewsCollector()
-    entry = _make_feed_entry()
-    event = collector._entry_to_event(entry, "fed_rss", "S", {"auto_l1": True})
-    assert event is not None
-    assert event.auto_l1 is True
-    assert event.keyword_score == 5.0
+def test_init_without_channels(empty_collector: YouTubeCollector) -> None:
+    """채널 없으면 빈 리스트"""
+    assert collector.channels == [] if False else (empty_collector.channels == [])
 
 
 # ────────────────────────────────────────────────────────
-# NewsCollector — _parse_entry_date
+# 채널 파싱
 # ────────────────────────────────────────────────────────
 @pytest.mark.unit
-def test_parse_entry_date_from_published_parsed() -> None:
-    """published_parsed 있으면 UTC datetime 반환"""
-    collector = NewsCollector()
-    entry = _make_feed_entry()
-    dt = collector._parse_entry_date(entry)
-    assert isinstance(dt, datetime)
-    assert dt.tzinfo is not None
+def test_parse_channels_valid(collector: YouTubeCollector) -> None:
+    """4개 채널 이름, ID, 가중치 정상 파싱"""
+    channels = collector.channels
+    names = [c["name"] for c in channels]
+    assert "소수몽키" in names
+    assert "전인구경제연구소" in names
 
 
 @pytest.mark.unit
-def test_parse_entry_date_fallback_to_string() -> None:
-    """published_parsed 없고 published 문자열 있으면 파싱"""
-    collector = NewsCollector()
-    entry = MagicMock()
-    entry.published_parsed = None
-    entry.get = lambda key, default="": {
-        "published": "2026-04-24T10:00:00+00:00",
-    }.get(key, default)
-    dt = collector._parse_entry_date(entry)
-    assert isinstance(dt, datetime)
+def test_parse_channels_weights(collector: YouTubeCollector) -> None:
+    """채널별 가중치 정확히 적용"""
+    by_name = {c["name"]: c["weight"] for c in collector.channels}
+    assert by_name["전인구경제연구소"] == 1.3
+    assert by_name["오선의 미국 증시 라이브"] == 1.2
+    assert by_name["소수몽키"] == 1.0
+    assert by_name["미주은"] == 0.9
 
 
 @pytest.mark.unit
-def test_parse_entry_date_fallback_to_now() -> None:
-    """published 정보 없으면 현재 시각"""
-    collector = NewsCollector()
-    entry = MagicMock()
-    entry.published_parsed = None
-    entry.get = lambda key, default="": default  # 모든 키 빈 문자열
-    dt = collector._parse_entry_date(entry)
-    assert isinstance(dt, datetime)
-    # 현재 시각과 1분 이내
-    assert abs((datetime.now(UTC) - dt).total_seconds()) < 60
+def test_parse_channels_invalid_format(collector: YouTubeCollector) -> None:
+    """잘못된 포맷('채널ID만'처럼 ':' 없으면) 스킵"""
+    c = YouTubeCollector(channels_str="소수몽키:UCxxx,invalid_no_colon,전인구:UCyyy")
+    assert len(c.channels) == 2
+
+
+@pytest.mark.unit
+def test_parse_channels_empty_string() -> None:
+    """빈 문자열 → 빈 리스트"""
+    c = YouTubeCollector(channels_str="")
+    assert c.channels == []
 
 
 # ────────────────────────────────────────────────────────
-# NewsCollector — window 및 dedup
+# 한글 키워드 매칭
 # ────────────────────────────────────────────────────────
 @pytest.mark.unit
-def test_is_within_window_true() -> None:
-    """window 이내 시각이면 True"""
-    collector = NewsCollector()
-    dt = datetime.now(UTC) - timedelta(hours=1)
+def test_match_keywords_kr_single_urgent(collector: YouTubeCollector) -> None:
+    """단일 긴급 키워드(속보=3.5) 매칭"""
+    score, matched = collector._match_keywords_kr("속보 미증시 급등")
+    assert score >= 3.5
+    assert "속보" in matched
+
+
+@pytest.mark.unit
+def test_match_keywords_kr_multiple(collector: YouTubeCollector) -> None:
+    """복수 키워드 합산 (긴급=3.0 + 위기=3.0 = 6.0)"""
+    score, matched = collector._match_keywords_kr("긴급속보 위기 경고")
+    assert score >= 6.0
+    assert len(matched) >= 2
+
+
+@pytest.mark.unit
+def test_match_keywords_kr_cap_applied(collector: YouTubeCollector) -> None:
+    """점수 상한(10.0) 초과 방지"""
+    text = "긴급 속보 대폭락 폭락장 서킷브레이커 거래정지 위기 경고"
+    score, _ = collector._match_keywords_kr(text)
+    assert score <= KEYWORD_SCORE_CAP
+
+
+@pytest.mark.unit
+def test_match_keywords_kr_no_match(collector: YouTubeCollector) -> None:
+    """매칭 없으면 점수 0.0"""
+    score, matched = collector._match_keywords_kr("오늘의 미국 증시 분석")
+    assert score == 0.0
+    assert matched == []
+
+
+# ────────────────────────────────────────────────────────
+# 수집 윈도우
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_within_48h_true(collector: YouTubeCollector) -> None:
+    """30시간 전은 48h 범위 내"""
+    dt = datetime.now(UTC) - timedelta(hours=30)
     assert collector._is_within_window(dt) is True
 
 
 @pytest.mark.unit
-def test_is_within_window_false() -> None:
-    """window 초과 시각이면 False"""
-    collector = NewsCollector()
-    dt = datetime.now(UTC) - timedelta(hours=30)
+def test_within_48h_false(collector: YouTubeCollector) -> None:
+    """50시간 전은 48h 초과"""
+    dt = datetime.now(UTC) - timedelta(hours=50)
     assert collector._is_within_window(dt) is False
 
 
 # ────────────────────────────────────────────────────────
-# YouTubeCollector — _collect_channel
+# 키워드 필터 및 제외 패턴
 # ────────────────────────────────────────────────────────
 @pytest.mark.unit
-def test_collect_channel_returns_events() -> None:
-    """정상 채널 RSS → CollectorEvent 반환"""
-    channel = {"name": "소수몽키", "id": "UCC3yfxS5qC6PCwDzetUuEWg", "weight": 1.0}
-    entry = _make_yt_entry()
-    feed = _make_feed([entry])
-
-    with patch("collectors.youtube_collector.feedparser.parse", return_value=feed):
-        collector = YouTubeCollector(channels_str="소수몽키:UCC3yfxS5qC6PCwDzetUuEWg")
-        events = collector._collect_channel(channel)
-
-    assert isinstance(events, list)
-    if events:
-        assert events[0].source_type == "youtube"
-        assert events[0].channel_weight == 1.0
+def test_filter_exclusion_pattern_removed(collector: YouTubeCollector) -> None:
+    """제외 패턴(오늘의 시황) 포함 이벤트 제거"""
+    event = make_yt_event(title="오늘의 시황 정리 및 분석")
+    result = collector._filter_by_keywords([event])
+    assert len(result) == 0
 
 
 @pytest.mark.unit
-def test_collect_channel_feedparser_failure_returns_empty() -> None:
-    """feedparser 예외 시 빈 리스트 반환 (계속 진행)"""
-    channel = {"name": "소수몽키", "id": "UCxxx", "weight": 1.0}
-    with patch("collectors.youtube_collector.feedparser.parse", side_effect=RuntimeError("err")):
-        collector = YouTubeCollector(channels_str="소수몽키:UCxxx")
-        events = collector._collect_channel(channel)
-    assert events == []
+def test_filter_valid_keyword_passed(collector: YouTubeCollector) -> None:
+    """유효 키워드(긴급속보) 포함 이벤트 통과 + keyword_score 설정"""
+    event = make_yt_event(title="긴급속보 미증시 서킷브레이커 발동")
+    result = collector._filter_by_keywords([event])
+    assert len(result) == 1
+    assert result[0].keyword_score >= KEYWORD_THRESHOLD
 
 
 @pytest.mark.unit
-def test_collect_channel_skips_old_entries() -> None:
-    """48시간 초과 영상은 스킵"""
-    channel = {"name": "소수몽키", "id": "UCxxx", "weight": 1.0}
-    old_entry = _make_yt_entry()
-    # 50시간 전 시각으로 설정
-    old_time = datetime.now(UTC) - timedelta(hours=50)
-    import calendar
-    old_entry.published_parsed = time.gmtime(calendar.timegm(old_time.timetuple()))
-
-    feed = _make_feed([old_entry])
-    with patch("collectors.youtube_collector.feedparser.parse", return_value=feed):
-        collector = YouTubeCollector(channels_str="소수몽키:UCxxx")
-        events = collector._collect_channel(channel)
-    assert events == []
-
-
-# ────────────────────────────────────────────────────────
-# YouTubeCollector — _parse_entry_date, _has_exclusion_pattern
-# ────────────────────────────────────────────────────────
-@pytest.mark.unit
-def test_yt_parse_entry_date_from_struct_time() -> None:
-    """published_parsed(time.struct_time) → UTC datetime"""
-    collector = YouTubeCollector(channels_str="")
-    entry = _make_yt_entry()
-    dt = collector._parse_entry_date(entry)
-    assert isinstance(dt, datetime)
-    assert dt.tzinfo is not None
-
-
-@pytest.mark.unit
-def test_yt_has_exclusion_pattern_true() -> None:
-    """제외 패턴 있으면 True"""
-    collector = YouTubeCollector(channels_str="")
-    assert collector._has_exclusion_pattern("오늘의 시황 정리") is True
-
-
-@pytest.mark.unit
-def test_yt_has_exclusion_pattern_false() -> None:
-    """제외 패턴 없으면 False"""
-    collector = YouTubeCollector(channels_str="")
-    assert collector._has_exclusion_pattern("긴급속보 미증시 폭락") is False
-
-
-@pytest.mark.unit
-def test_yt_normalize_datetime_valid() -> None:
-    """_normalize_datetime — ISO 8601 포맷 반환"""
-    collector = YouTubeCollector(channels_str="")
-    result = collector._normalize_datetime("2026-04-24T10:00:00+00:00")
-    assert "2026" in result
-    assert "T" in result
-
-
-@pytest.mark.unit
-def test_yt_is_within_window_naive_datetime() -> None:
-    """timezone-naive datetime도 처리 가능"""
-    collector = YouTubeCollector(channels_str="")
-    naive_dt = datetime.utcnow() - timedelta(hours=1)  # naive
-    assert collector._is_within_window(naive_dt) is True
+def test_channel_weight_reflected_in_event(collector: YouTubeCollector) -> None:
+    """채널 가중치가 CollectorEvent.channel_weight에 반영됨"""
+    # _parse_channels를 통해 전인구(1.3)가 올바르게 설정되는지
+    jeoninku = next(c for c in collector.channels if c["name"] == "전인구경제연구소")
+    assert jeoninku["weight"] == 1.3

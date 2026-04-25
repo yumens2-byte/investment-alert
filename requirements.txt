@@ -1,55 +1,57 @@
 # ────────────────────────────────────────────────────────
-# pyproject.toml
-# GTT팀 공통지침 11(ruff+pytest 세트) 완전 준수
+# Python
 # ────────────────────────────────────────────────────────
-
-[project]
-name = "investment-alert"
-version = "0.4.0"
-description = "미국 증시 긴급 Alert 감지 시스템"
-requires-python = ">=3.11"
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
 # ────────────────────────────────────────────────────────
-# ruff 설정 (공통지침 11)
+# 가상 환경
 # ────────────────────────────────────────────────────────
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-exclude = [
-    ".venv",
-    "venv",
-    "__pycache__",
-    "build",
-    "dist",
-]
+venv/
+env/
+ENV/
+.venv/
 
-[tool.ruff.lint]
-select = [
-    "E",    # pycodestyle errors
-    "F",    # pyflakes
-    "I",    # isort
-    "W",    # pycodestyle warnings
-    "B",    # flake8-bugbear
-    "UP",   # pyupgrade
-]
-ignore = [
-    "E501",  # line too long (ruff format이 처리)
-    "B008",  # Function call in default argument
-]
+# ────────────────────────────────────────────────────────
+# 환경 변수
+# ────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
 
-[tool.ruff.lint.isort]
-# 공통지침 11: known-first-party 필수 설정
-known-first-party = [
-    "publishers",
-    "db",
-    "collectors",
-    "config",
-    "core",
-    "detection",
-    "validators",
-    "tests",
-]
+# ────────────────────────────────────────────────────────
+# 빌드/배포 산출물
+# ────────────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
 
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]  # 테스트에서는 assert False 허용
-"__init__.py" = ["F401"]  # re-export 허용
+# ────────────────────────────────────────────────────────
+# 테스트 및 커버리지
+# ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ruff_cache/
+.mypy_cache/
+
+# ────────────────────────────────────────────────────────
+# IDE
+# ────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ────────────────────────────────────────────────────────
+# 로그
+# ────────────────────────────────────────────────────────
+*.log
+logs/

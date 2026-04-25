@@ -1,137 +1,115 @@
 """
-제목: AlertStore 단위 테스트
-내용: Supabase 연동 없이 Mock 기반으로 save_alert, update_publish_result,
-      is_cooldown_active, set_cooldown을 테스트합니다.
+제목: X(Twitter) 발행 모듈
+내용: tweepy v4를 사용하여 X API에 트윗을 발행합니다.
+      DRY_RUN=true 환경에서는 실제 발행 없이 로그만 출력합니다.
+
+주요 클래스:
+  - XPublisher: X API 발행 클라이언트
+
+주요 함수:
+  - XPublisher.publish(text): 트윗 발행, tweet_id 반환
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+import os
 
-import pytest
+from core.logger import get_logger
 
-from db.alert_store import COOLDOWN_MINUTES, AlertStore
+VERSION = "1.0.0"
 
-
-@pytest.fixture
-def store() -> AlertStore:
-    return AlertStore(supabase_url="https://test.supabase.co", supabase_key="testkey")
+logger = get_logger(__name__)
 
 
-def _make_mock_client() -> MagicMock:
-    """Supabase 클라이언트 mock"""
-    client = MagicMock()
-    # 체이닝 메서드 지원
-    client.table.return_value = client
-    client.upsert.return_value = client
-    client.update.return_value = client
-    client.select.return_value = client
-    client.eq.return_value = client
-    client.execute.return_value = MagicMock(data=[])
-    return client
+class XPublisher:
+    """
+    제목: X(Twitter) 발행 클라이언트
+    내용: tweepy v4 Client를 사용한 X API v2 트윗 발행.
+          DRY_RUN 모드에서는 실제 발행 없이 시뮬레이션.
 
+    책임:
+      - 트윗 발행 (publish)
+      - DRY_RUN 모드 지원
+      - API 오류 시 상세 로깅
+    """
 
-# ── save_alert ────────────────────────────────────────
-@pytest.mark.unit
-def test_save_alert_success(store: AlertStore) -> None:
-    """save_alert 성공 시 True 반환"""
-    store._client = _make_mock_client()
-    result = store.save_alert(
-        alert_id="uuid-1234",
-        level="L2",
-        score=5.5,
-        health_score=0.85,
-        reasoning="L2 판정",
-        top_news=[{"title": "News", "source": "reuters"}],
-        top_youtube=[],
-    )
-    assert result is True
+    def __init__(self, dry_run: bool | None = None) -> None:
+        """
+        제목: XPublisher 초기화
 
+        Args:
+            dry_run: True면 모의 실행. None이면 DRY_RUN 환경변수 참조.
+        """
+        from config.settings import get_env_bool
+        self.dry_run = dry_run if dry_run is not None else get_env_bool("DRY_RUN", True)
+        self._client: object | None = None
 
-@pytest.mark.unit
-def test_save_alert_failure_returns_false(store: AlertStore) -> None:
-    """save_alert 실패 시 False 반환 (예외 발생 시)"""
-    mock_client = _make_mock_client()
-    mock_client.execute.side_effect = RuntimeError("DB Error")
-    store._client = mock_client
-    result = store.save_alert("uuid", "L2", 5.0, 0.8, "근거", [], [])
-    assert result is False
+        if not self.dry_run:
+            self._client = self._build_client()
 
+        logger.info(f"[XPublisher] v{VERSION} 초기화 (dry_run={self.dry_run})")
 
-# ── update_publish_result ─────────────────────────────
-@pytest.mark.unit
-def test_update_publish_result_success(store: AlertStore) -> None:
-    """update_publish_result 성공 시 True 반환"""
-    store._client = _make_mock_client()
-    result = store.update_publish_result(
-        alert_id="uuid-1234",
-        x_published=True,
-        tg_free_published=True,
-        tg_paid_published=False,
-        x_error=None,
-    )
-    assert result is True
+    def _build_client(self) -> object:
+        """
+        제목: tweepy Client 생성
+        내용: 환경변수에서 X API 키를 로드하여 tweepy.Client를 생성합니다.
 
+        Returns:
+            tweepy.Client: 인증된 클라이언트
 
-# ── is_cooldown_active ────────────────────────────────
-@pytest.mark.unit
-def test_cooldown_active_when_future(store: AlertStore) -> None:
-    """cooldown_until이 미래이면 True"""
-    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-    mock_client = _make_mock_client()
-    mock_client.execute.return_value = MagicMock(data=[{"cooldown_until": future}])
-    store._client = mock_client
-    assert store.is_cooldown_active("L2") is True
+        Raises:
+            RuntimeError: 필수 환경변수 누락 시
+        """
+        try:
+            import tweepy  # type: ignore[import]
+        except ImportError as e:
+            raise RuntimeError("tweepy 패키지 미설치 — pip install tweepy") from e
 
+        api_key = os.getenv("X_API_KEY", "")
+        api_secret = os.getenv("X_API_SECRET", "")
+        access_token = os.getenv("X_ACCESS_TOKEN", "")
+        access_secret = os.getenv("X_ACCESS_TOKEN_SECRET", "")
 
-@pytest.mark.unit
-def test_cooldown_inactive_when_past(store: AlertStore) -> None:
-    """cooldown_until이 과거이면 False"""
-    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    mock_client = _make_mock_client()
-    mock_client.execute.return_value = MagicMock(data=[{"cooldown_until": past}])
-    store._client = mock_client
-    assert store.is_cooldown_active("L2") is False
+        if not all([api_key, api_secret, access_token, access_secret]):
+            raise RuntimeError("X API 환경변수 누락. .env 파일 확인 필요.")
 
+        return tweepy.Client(
+            consumer_key=api_key,
+            consumer_secret=api_secret,
+            access_token=access_token,
+            access_token_secret=access_secret,
+        )
 
-@pytest.mark.unit
-def test_cooldown_inactive_when_no_rows(store: AlertStore) -> None:
-    """레코드 없으면 False"""
-    store._client = _make_mock_client()
-    assert store.is_cooldown_active("L1") is False
+    def publish(self, text: str) -> str:
+        """
+        제목: 트윗 발행
+        내용: DRY_RUN=false이면 실제 트윗을 발행하고 tweet_id를 반환합니다.
+              DRY_RUN=true이면 "DRY_RUN" 문자열 반환.
 
+        처리 플로우:
+          1. DRY_RUN 체크 → 시뮬레이션 반환
+          2. tweepy Client로 트윗 생성
+          3. tweet_id 반환
 
-@pytest.mark.unit
-def test_cooldown_query_failure_returns_false(store: AlertStore) -> None:
-    """Supabase 오류 시 False 반환 (안전 처리)"""
-    mock_client = _make_mock_client()
-    mock_client.execute.side_effect = RuntimeError("DB Error")
-    store._client = mock_client
-    assert store.is_cooldown_active("L1") is False
+        Args:
+            text: 트윗 본문 (280자 이내)
 
+        Returns:
+            str: 발행 성공 시 tweet_id, DRY_RUN 시 "DRY_RUN"
 
-# ── set_cooldown ──────────────────────────────────────
-@pytest.mark.unit
-def test_set_cooldown_success(store: AlertStore) -> None:
-    """set_cooldown 성공 시 True 반환"""
-    store._client = _make_mock_client()
-    result = store.set_cooldown(level="L2", alert_id="uuid-1234")
-    assert result is True
+        Raises:
+            RuntimeError: 발행 실패 시
+        """
+        if self.dry_run:
+            logger.info(f"[XPublisher] DRY_RUN — 트윗 시뮬레이션: {text[:60]}...")
+            return "DRY_RUN"
 
-
-@pytest.mark.unit
-def test_cooldown_minutes_defined() -> None:
-    """L1/L2/L3 모두 쿨다운 분 정의됨"""
-    for level in ("L1", "L2", "L3"):
-        assert level in COOLDOWN_MINUTES
-        assert COOLDOWN_MINUTES[level] > 0
-
-
-# ── get_client lazy init ──────────────────────────────
-@pytest.mark.unit
-def test_get_client_raises_when_no_credentials() -> None:
-    """URL/KEY 미설정 시 RuntimeError"""
-    store = AlertStore(supabase_url="", supabase_key="")
-    with pytest.raises(RuntimeError, match="SUPABASE_URL"):
-        store._get_client()
+        try:
+            assert self._client is not None
+            response = self._client.create_tweet(text=text)  # type: ignore[union-attr]
+            tweet_id = str(response.data["id"])  # type: ignore[index]
+            logger.info(f"[XPublisher] 트윗 발행 성공: tweet_id={tweet_id}")
+            return tweet_id
+        except Exception as e:
+            logger.error(f"[XPublisher] 트윗 발행 실패: {type(e).__name__}: {e}")
+            raise RuntimeError(f"X 발행 실패: {e}") from e

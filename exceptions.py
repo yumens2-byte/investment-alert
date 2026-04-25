@@ -1,31 +1,32 @@
 """
-제목: 모든 Collector의 추상 기반 클래스 및 공통 이벤트 모델
-내용: RSS/API로부터 데이터를 수집하는 모든 Collector의 공통 인터페이스를 정의하고,
-      재시도 로직, 이벤트 유효성 검증, 표준 데이터 구조(CollectorEvent)를 제공합니다.
+제목: 뉴스 소스 RSS 수집 모듈
+내용: Tier S/A/B 뉴스 소스로부터 RSS를 수집하고 키워드 필터링·AI 분석·교차검증을
+      수행하여 CollectorEvent 리스트를 반환합니다.
 
 주요 클래스:
-  - CollectorEvent: 모든 Collector가 반환하는 공통 이벤트 데이터 클래스
-  - BaseCollector: 구체 Collector(NewsCollector, YouTubeCollector)가 상속하는 추상 클래스
+  - NewsCollector: Tier별 RSS 수집, 키워드 필터링, AI 스코어링, 교차검증
 
 주요 함수:
-  - BaseCollector.collect(): 하위 클래스에서 구현할 추상 메서드
-  - BaseCollector._retry_request(): 지수 백오프 재시도 로직
-  - BaseCollector._validate_event(): 이벤트 필수 필드 검증
-  - CollectorEvent.compute_event_id(): 해시 기반 중복 제거 ID 생성
+  - NewsCollector.collect(): 전체 수집 파이프라인 실행
+  - NewsCollector._collect_tier(tier): 단일 Tier RSS 수집
+  - NewsCollector._filter_by_keywords(events): 키워드 1차 필터
+  - NewsCollector._apply_ai_scoring(events): AI Impact 분석 (선택적)
+  - NewsCollector._apply_cross_validation(events): 복수 소스 교차검증
 """
 
 from __future__ import annotations
 
 import hashlib
-import time
-from abc import ABC, abstractmethod
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Any
+import json
+from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol, runtime_checkable
 
-from core.exceptions import CollectorException, ValidationException
+import feedparser
+
+from collectors.base import BaseCollector, CollectorEvent
+from config.settings import NEWS_SOURCE_REGISTRY, NEWS_WINDOW_HOURS
 from core.logger import get_logger
+from validators.news_validator import NewsValidator
 
 VERSION = "1.0.0"
 
@@ -33,237 +34,457 @@ logger = get_logger(__name__)
 
 
 # ────────────────────────────────────────────────────────
-# 공통 이벤트 데이터 클래스
+# AI 클라이언트 프로토콜 (의존성 역전)
 # ────────────────────────────────────────────────────────
-@dataclass
-class CollectorEvent:
+@runtime_checkable
+class AIClientProtocol(Protocol):
     """
-    제목: 모든 Collector가 반환하는 공통 이벤트 구조
-    내용: 뉴스(News), 유튜브(YouTube) 등 서로 다른 소스에서 수집한 이벤트를
-          동일한 데이터 구조로 표현하여 상위 레이어(MacroNewsLayer)에서
-          일관되게 처리할 수 있도록 합니다.
+    제목: AI 클라이언트 프로토콜
+    내용: Gemini·Claude 등 AI 클라이언트의 공통 인터페이스 정의.
+          테스트에서는 Mock으로 교체 가능. 프로덕션에서는 GeminiGateway 주입.
 
     책임:
-      - 공통 식별 필드 제공(source_type, source_name, event_id)
-      - 콘텐츠 필드 제공(title, summary, url, published_at)
-      - 필터링 결과 보관(keyword_score, matched_keywords)
-      - AI 분석 결과 보관(ai_score, ai_reasoning)
-      - 교차검증 메타 보관(source_count, topic_hash, channel_weight, tier)
+      - generate(prompt): 텍스트 생성 요청 단일 진입점
     """
 
-    # ── 공통 식별 ─────────────────────────────────────
-    source_type: str  # 'news' | 'youtube'
-    source_name: str  # 'fed_rss', '소수몽키' 등
-    event_id: str  # 중복 제거용 고유 ID (hash 또는 video_id)
-
-    # ── 콘텐츠 ────────────────────────────────────────
-    title: str
-    summary: str
-    url: str
-    published_at: datetime  # UTC timezone-aware
-
-    # ── 수집원 메타 ───────────────────────────────────
-    tier: str | None = None  # 'S'|'A'|'B' (news only), youtube는 None
-    channel_weight: float = 1.0  # youtube 채널 가중치 (news는 1.0)
-    auto_l1: bool = False  # Tier S auto_l1 소스 여부
-
-    # ── 1차 필터링 결과 ───────────────────────────────
-    keyword_score: float = 0.0
-    matched_keywords: list[str] = field(default_factory=list)
-
-    # ── AI 분석 결과 ──────────────────────────────────
-    ai_score: float | None = None
-    ai_reasoning: str | None = None
-
-    # ── 교차검증 ──────────────────────────────────────
-    source_count: int = 1  # 동일 주제 다른 소스 수
-    topic_hash: str | None = None
-
-    @staticmethod
-    def compute_event_id(source_name: str, url: str, title: str) -> str:
+    def generate(self, prompt: str) -> str:
         """
-        제목: 이벤트 고유 ID 생성
-        내용: 소스명 + URL + 제목을 결합한 SHA256 해시의 앞 16자리 반환.
-              URL이 비어있거나 변경될 가능성을 고려해 제목도 포함.
+        제목: 텍스트 생성
+        내용: 프롬프트를 입력받아 AI 응답 텍스트를 반환합니다.
 
         Args:
-            source_name: 소스 식별자
-            url: 이벤트 URL
-            title: 이벤트 제목
+            prompt: AI에 전달할 프롬프트
 
         Returns:
-            str: 16자리 해시 ID
+            str: AI 응답 텍스트
         """
-        raw = f"{source_name}|{url}|{title}".encode()
-        return hashlib.sha256(raw).hexdigest()[:16]
-
-    @property
-    def effective_score(self) -> float:
-        """
-        제목: 실효 점수 반환
-        내용: AI 점수가 있으면 AI 점수를, 없으면 키워드 점수를 반환.
-              상위 레이어(MacroNewsLayer)의 점수 계산에서 공통 진입점.
-
-        Returns:
-            float: AI 점수 우선, fallback으로 키워드 점수
-        """
-        return self.ai_score if self.ai_score is not None else self.keyword_score
+        ...
 
 
 # ────────────────────────────────────────────────────────
-# 추상 Collector 베이스
+# 긴급 키워드 정의
 # ────────────────────────────────────────────────────────
-class BaseCollector(ABC):
+# 제목: L1 긴급 키워드
+# 내용: 3인 전문가 협의 설계서 Round 1 확정값
+URGENT_KEYWORDS_L1: dict[str, float] = {
+    "emergency": 5.0,
+    "crisis": 4.5,
+    "unprecedented": 4.0,
+    "extraordinary measures": 5.0,
+    "circuit breaker": 5.0,
+    "trading halt": 4.5,
+    "market closed": 5.0,
+    "flash crash": 4.5,
+    "federal reserve announces": 5.0,
+}
+
+# 제목: L2 긴급 키워드
+# 내용: L1보다 낮은 충격, 세부 분석 필요
+URGENT_KEYWORDS_L2: dict[str, float] = {
+    "significant": 2.5,
+    "concern": 2.0,
+    "volatility spike": 3.0,
+    "sell-off": 2.5,
+    "plunge": 3.0,
+    "tumble": 2.5,
+    "surge": 2.5,
+    "rate hike": 3.0,
+    "rate cut": 3.0,
+    "recession": 3.5,
+}
+
+# 제목: 키워드 매칭 최소 임계값
+# 내용: 이 점수 미만의 이벤트는 제외
+KEYWORD_THRESHOLD: float = 2.0
+
+# 제목: AI 분석 임계값
+# 내용: keyword_score가 이 이상인 이벤트만 AI 분석 수행 (쿼터 절약)
+AI_SCORE_MIN_KEYWORD: float = 2.5
+
+
+class NewsCollector(BaseCollector):
     """
-    제목: 모든 Collector의 추상 기반 클래스
-    내용: 데이터 수집의 공통 인터페이스를 정의하고,
-          재시도 로직 및 에러 처리를 제공합니다.
+    제목: Tier별 뉴스 RSS 수집 및 분석
+    내용: settings.NEWS_SOURCE_REGISTRY에 정의된 Tier S/A/B 소스에서
+          RSS를 수집하고, NewsValidator·키워드 필터·AI 분석·교차검증을 순서대로 적용합니다.
 
     책임:
-      - collect() 메서드 추상 메서드 정의
-      - _retry_request() 재시도 로직(지수 백오프)
-      - _validate_event() 이벤트 유효성 검증
-      - _now_utc() 테스트 가능한 현재 시각 공급자
+      - Tier S/A/B RSS 수집 (BaseCollector 재시도 로직 활용)
+      - 24시간 필터링 + SHA256 중복 제거
+      - 키워드 1차 필터 → AI Impact Scoring → 교차검증
+      - NewsValidator 적용 (추측성·재탕 제거)
+      - 최종 결과 effective_score 내림차순 정렬
     """
 
     def __init__(
         self,
-        source_name: str,
-        timeout: int = 15,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
+        ai_client: AIClientProtocol | None = None,
+        validator: NewsValidator | None = None,
+        source_registry: dict | None = None,
+        window_hours: int = NEWS_WINDOW_HOURS,
     ) -> None:
         """
-        제목: Collector 초기화
+        제목: NewsCollector 초기화
 
         Args:
-            source_name: Collector 식별자 (로그용)
-            timeout: HTTP 요청 타임아웃 초
-            max_retries: 최대 재시도 횟수
-            retry_delay: 첫 재시도 지연 시간 (초). 이후 지수 백오프
+            ai_client: AI 클라이언트 (None이면 keyword_score fallback)
+            validator: 뉴스 검증기 (None이면 기본 NewsValidator 사용)
+            source_registry: 소스 레지스트리 (None이면 settings 기본값 사용)
+            window_hours: 수집 시간 범위 (기본: 24시간)
         """
-        self.source_name = source_name
-        self.timeout = timeout
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
+        super().__init__(source_name="news_collector", timeout=15, max_retries=3)
+        self.ai_client = ai_client
+        self.validator = validator or NewsValidator(window_hours=window_hours)
+        self.source_registry = source_registry or NEWS_SOURCE_REGISTRY
+        self.window_hours = window_hours
 
-    @abstractmethod
+        # 제목: 세션 내 중복 제거 ID 집합
+        # 내용: collect() 호출마다 초기화
+        self._seen_event_ids: set[str] = set()
+
+        logger.info(f"[NewsCollector] v{VERSION} 초기화 (window={window_hours}h, ai={ai_client is not None})")
+
     def collect(self) -> list[CollectorEvent]:
         """
-        제목: 수집 실행 (하위 클래스 구현 필수)
-        내용: 각 Collector 고유 로직으로 이벤트를 수집하여
-              CollectorEvent 리스트를 반환합니다.
-
-        Returns:
-            list[CollectorEvent]: 수집된 이벤트 리스트
-
-        Raises:
-            CollectorException: 수집 실패 시
-        """
-        raise NotImplementedError
-
-    def _retry_request(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
-        """
-        제목: HTTP 요청 재시도 로직
-        내용: 지수 백오프로 max_retries번 재시도합니다.
-              ValidationException은 재시도하지 않고 즉시 전파(비재시도 오류).
+        제목: 뉴스 수집 전체 파이프라인
+        내용: RSS 수집 → 검증 → 키워드 필터 → AI 분석 → 교차검증 → 정렬 순서로 실행.
 
         처리 플로우:
-          1. 함수 실행 시도
-          2. ValidationException → 즉시 전파 (재시도 무의미)
-          3. 기타 예외 → retry_delay × (2^attempt) 대기 후 재시도
-          4. max_retries 초과 시 CollectorException 발생
-
-        Args:
-            func: 실행할 함수
-            *args, **kwargs: func에 전달할 인자
+          1. 중복 제거 집합 초기화
+          2. Tier S → A → B 순서로 RSS 수집
+          3. NewsValidator 적용
+          4. 키워드 1차 필터
+          5. AI Impact Scoring (ai_client 있는 경우)
+          6. 교차검증 (source_count 계산)
+          7. effective_score 내림차순 정렬
 
         Returns:
-            Any: func 실행 결과
-
-        Raises:
-            CollectorException: 모든 재시도 실패 시
-            ValidationException: 검증 오류 (재시도 안 함)
+            list[CollectorEvent]: 최종 필터링된 이벤트 (점수 내림차순)
         """
-        last_error: Exception | None = None
+        logger.info("[NewsCollector] 뉴스 수집 시작")
 
-        for attempt in range(self.max_retries + 1):
+        # 제목: 중복 제거 집합 초기화
+        self._seen_event_ids = set()
+
+        # Step 1: Tier별 수집
+        raw_events: list[CollectorEvent] = []
+        for tier in ("S", "A", "B"):
+            tier_events = self._collect_tier(tier)
+            raw_events.extend(tier_events)
+
+        logger.info(f"[NewsCollector] RSS 수집 완료: {len(raw_events)}건")
+
+        # Step 2: NewsValidator 적용
+        validated = self.validator.validate_all(raw_events)
+        logger.info(f"[NewsCollector] 검증 후: {len(validated)}건")
+
+        # Step 3: 키워드 1차 필터
+        filtered = self._filter_by_keywords(validated)
+        logger.info(f"[NewsCollector] 키워드 필터 후: {len(filtered)}건")
+
+        # Step 4: AI 분석 (선택적)
+        scored = self._apply_ai_scoring(filtered)
+
+        # Step 5: 교차검증
+        cross_validated = self._apply_cross_validation(scored)
+
+        # Step 6: 정렬
+        cross_validated.sort(key=lambda e: e.effective_score, reverse=True)
+
+        logger.info(f"[NewsCollector] 수집 완료: 최종 {len(cross_validated)}건")
+        return cross_validated
+
+    def _collect_tier(self, tier: str) -> list[CollectorEvent]:
+        """
+        제목: 단일 Tier 소스 RSS 수집
+        내용: 해당 Tier의 모든 소스를 순회하며 RSS를 파싱합니다.
+              개별 소스 실패는 경고 로깅 후 다음 소스로 계속 진행합니다.
+
+        Args:
+            tier: 'S', 'A', 'B' 중 하나
+
+        Returns:
+            list[CollectorEvent]: 해당 Tier에서 수집된 이벤트
+        """
+        events: list[CollectorEvent] = []
+        sources = self.source_registry.get(tier, {})
+
+        for source_name, config in sources.items():
+            url = config.get("url")
+            if not url:
+                continue
+
             try:
-                return func(*args, **kwargs)
-            except ValidationException:
-                # 제목: 검증 오류는 재시도 안 함
-                # 내용: 데이터 문제이므로 같은 요청 재시도해도 동일 결과
-                raise
+                feed = self._retry_request(feedparser.parse, url)
+                entries = getattr(feed, "entries", [])
+
+                for entry in entries[:10]:  # 소스당 최근 10건
+                    event = self._entry_to_event(entry, source_name, tier, config)
+                    if event is None:
+                        continue
+
+                    # 제목: SHA256 중복 제거
+                    # 내용: 동일 이벤트 ID가 이미 수집된 경우 스킵
+                    if event.event_id in self._seen_event_ids:
+                        continue
+                    self._seen_event_ids.add(event.event_id)
+
+                    # 제목: 24시간 이내 필터링
+                    # 내용: 수집 윈도우 초과 이벤트 조기 제거
+                    if not self._is_within_window(event.published_at):
+                        continue
+
+                    events.append(event)
+
             except Exception as e:
-                last_error = e
-                if attempt < self.max_retries:
-                    # 제목: 지수 백오프 대기
-                    # 내용: 1초 → 2초 → 4초 ...
-                    wait = self.retry_delay * (2**attempt)
-                    logger.warning(
-                        f"[{self.source_name}] 시도 {attempt + 1}/{self.max_retries + 1} 실패: "
-                        f"{type(e).__name__}: {e} (재시도 대기 {wait:.1f}초)"
-                    )
-                    time.sleep(wait)
-                else:
-                    logger.error(
-                        f"[{self.source_name}] 최종 실패 (시도 {attempt + 1}회): "
-                        f"{type(e).__name__}: {e}"
-                    )
+                logger.warning(f"[NewsCollector] {source_name} 수집 실패: {type(e).__name__}: {e}")
 
-        raise CollectorException(
-            f"{self.source_name}: {self.max_retries + 1}회 재시도 후 최종 실패",
-            source_name=self.source_name,
-            retryable=False,
-            cause=last_error,
-        )
+        return events
 
-    def _validate_event(self, event: CollectorEvent) -> None:
+    def _entry_to_event(
+        self,
+        entry: Any,
+        source_name: str,
+        tier: str,
+        config: dict,
+    ) -> CollectorEvent | None:
         """
-        제목: 이벤트 필수 필드 검증
-        내용: CollectorEvent의 필수 필드가 비어있지 않은지 확인.
-
-        처리 플로우:
-          1. title 비어있음 → ValidationException
-          2. url 비어있음 → ValidationException
-          3. published_at가 datetime 아님 → ValidationException
-          4. source_name 비어있음 → ValidationException
+        제목: feedparser 엔트리를 CollectorEvent로 변환
+        내용: feedparser 엔트리 딕셔너리에서 필수 필드를 추출하고
+              CollectorEvent 인스턴스를 생성합니다. 오류 시 None 반환.
 
         Args:
-            event: 검증할 이벤트
-
-        Raises:
-            ValidationException: 필수 필드 누락 시
-        """
-        if not event.title or not event.title.strip():
-            raise ValidationException(
-                f"이벤트 title 누락 (source={event.source_name})",
-                rule="required_title",
-            )
-        if not event.url or not event.url.strip():
-            raise ValidationException(
-                f"이벤트 url 누락 (source={event.source_name}, title={event.title[:30]})",
-                rule="required_url",
-            )
-        if not isinstance(event.published_at, datetime):
-            raise ValidationException(
-                f"published_at 타입 오류 (source={event.source_name})",
-                rule="datetime_type",
-            )
-        if not event.source_name or not event.source_name.strip():
-            raise ValidationException(
-                "source_name 누락",
-                rule="required_source_name",
-            )
-
-    @staticmethod
-    def _now_utc() -> datetime:
-        """
-        제목: 현재 UTC 시각 반환
-        내용: datetime.now(timezone.utc)의 얇은 래퍼.
-              테스트에서 mock하기 쉽도록 메서드로 분리.
+            entry: feedparser 엔트리 객체
+            source_name: 소스 식별자
+            tier: 뉴스 Tier
+            config: 소스 설정 딕셔너리
 
         Returns:
-            datetime: timezone-aware UTC 현재 시각
+            CollectorEvent | None: 변환 성공 시 이벤트, 실패 시 None
         """
+        try:
+            title = entry.get("title", "").strip()
+            url = entry.get("link", "").strip()
+            summary = entry.get("summary", "")[:500]
+
+            if not title or not url:
+                return None
+
+            published_at = self._parse_entry_date(entry)
+            event_id = CollectorEvent.compute_event_id(source_name, url, title)
+            auto_l1 = config.get("auto_l1", False)
+
+            return CollectorEvent(
+                source_type="news",
+                source_name=source_name,
+                event_id=event_id,
+                title=title,
+                summary=summary,
+                url=url,
+                published_at=published_at,
+                tier=tier,
+                channel_weight=1.0,
+                auto_l1=auto_l1,
+                # auto_l1이면 keyword_score 5.0 선설정
+                keyword_score=5.0 if auto_l1 else 0.0,
+                matched_keywords=["auto_l1"] if auto_l1 else [],
+            )
+        except Exception as e:
+            logger.debug(f"[NewsCollector] 엔트리 변환 실패: {e}")
+            return None
+
+    def _parse_entry_date(self, entry: Any) -> datetime:
+        """
+        제목: feedparser 엔트리 날짜 파싱
+        내용: published_parsed → published 순으로 시도.
+              파싱 실패 시 현재 UTC 시각 반환.
+
+        Args:
+            entry: feedparser 엔트리 객체
+
+        Returns:
+            datetime: UTC timezone-aware 발행 시각
+        """
+        # 제목: published_parsed 우선 시도
+        # 내용: feedparser가 time.struct_time으로 파싱한 결과
+        if hasattr(entry, "published_parsed") and entry.published_parsed:
+            import calendar
+            ts = calendar.timegm(entry.published_parsed)
+            return datetime.fromtimestamp(ts, tz=UTC)
+
+        # 제목: published 문자열 fallback
+        # 내용: dateutil로 직접 파싱
+        published_str = entry.get("published", "")
+        if published_str:
+            try:
+                from dateutil.parser import parse as dateutil_parse
+                dt = dateutil_parse(published_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                return dt
+            except Exception:
+                pass
+
+        # 제목: 최종 fallback
+        # 내용: 현재 시각 반환 (최소 수집 보장)
         return datetime.now(UTC)
+
+    def _filter_by_keywords(self, events: list[CollectorEvent]) -> list[CollectorEvent]:
+        """
+        제목: 키워드 1차 필터
+        내용: auto_l1 이벤트는 통과, 나머지는 URGENT_KEYWORDS로 점수를 매겨
+              KEYWORD_THRESHOLD 이상인 이벤트만 반환합니다.
+
+        Args:
+            events: 필터 대상 이벤트 리스트
+
+        Returns:
+            list[CollectorEvent]: 임계값 초과 이벤트
+        """
+        filtered: list[CollectorEvent] = []
+
+        for event in events:
+            # 제목: auto_l1 소스는 키워드 필터 우회
+            if event.auto_l1:
+                filtered.append(event)
+                continue
+
+            combined = f"{event.title} {event.summary}".lower()
+            score = 0.0
+            matched: list[str] = []
+
+            all_keywords = {**URGENT_KEYWORDS_L1, **URGENT_KEYWORDS_L2}
+            for keyword, weight in all_keywords.items():
+                if keyword in combined:
+                    score += weight
+                    matched.append(keyword)
+
+            if score >= KEYWORD_THRESHOLD:
+                event.keyword_score = score
+                event.matched_keywords = matched
+                filtered.append(event)
+
+        return filtered
+
+    def _apply_ai_scoring(self, events: list[CollectorEvent]) -> list[CollectorEvent]:
+        """
+        제목: AI Impact Scoring (선택적)
+        내용: ai_client가 주입된 경우, keyword_score가 AI_SCORE_MIN_KEYWORD 이상인
+              이벤트만 Gemini에 분석을 요청합니다. 실패 시 keyword_score로 fallback.
+
+        처리 플로우:
+          1. ai_client 미주입 시 즉시 반환
+          2. keyword_score < AI_SCORE_MIN_KEYWORD이면 스킵
+          3. Gemini 호출 → JSON {score, reasoning} 파싱
+          4. 파싱 실패 시 keyword_score를 ai_score로 설정 (fallback)
+
+        Args:
+            events: AI 분석 대상 이벤트
+
+        Returns:
+            list[CollectorEvent]: ai_score가 채워진 이벤트
+        """
+        if not self.ai_client:
+            return events
+
+        for event in events:
+            # 제목: auto_l1은 AI 분석 불필요
+            if event.auto_l1:
+                event.ai_score = 5.0
+                event.ai_reasoning = "Tier S auto_l1 source"
+                continue
+
+            # 제목: keyword 점수 낮은 이벤트 스킵 (쿼터 절약)
+            if event.keyword_score < AI_SCORE_MIN_KEYWORD:
+                event.ai_score = event.keyword_score
+                continue
+
+            try:
+                prompt = (
+                    f"Rate the US market impact of this news on a scale of 0-10.\n"
+                    f"Output ONLY valid JSON: {{\"score\": <number>, \"reasoning\": \"<text>\"}}\n\n"
+                    f"Title: {event.title}\n"
+                    f"Summary: {event.summary[:200]}"
+                )
+                response = self.ai_client.generate(prompt)
+                result = json.loads(response.strip())
+                event.ai_score = float(result.get("score", 0.0))
+                event.ai_reasoning = str(result.get("reasoning", ""))
+
+            except Exception as e:
+                logger.warning(
+                    f"[NewsCollector] AI 분석 실패 (source={event.source_name}): "
+                    f"{type(e).__name__}: {e} → keyword_score fallback"
+                )
+                event.ai_score = event.keyword_score
+                event.ai_reasoning = "AI fallback to keyword score"
+
+        return events
+
+    def _apply_cross_validation(self, events: list[CollectorEvent]) -> list[CollectorEvent]:
+        """
+        제목: 복수 소스 교차검증
+        내용: topic_hash가 같은 이벤트를 그룹화하여 source_count를 업데이트합니다.
+              복수 소스에서 보도된 이벤트는 신뢰도가 높아집니다.
+
+        처리 플로우:
+          1. 각 이벤트의 topic_hash 계산
+          2. topic_hash 기준으로 그룹화
+          3. 그룹 내 소스 수 카운트 → source_count 업데이트
+
+        Args:
+            events: 교차검증 대상 이벤트
+
+        Returns:
+            list[CollectorEvent]: source_count가 업데이트된 이벤트
+        """
+        # 제목: topic_hash 계산
+        for event in events:
+            event.topic_hash = self._compute_topic_hash(event.title)
+
+        # 제목: 그룹별 소스 카운트
+        from collections import defaultdict
+        groups: dict[str, list[str]] = defaultdict(list)
+        for event in events:
+            if event.topic_hash:
+                groups[event.topic_hash].append(event.source_name)
+
+        # 제목: source_count 업데이트
+        for event in events:
+            if event.topic_hash and event.topic_hash in groups:
+                unique_sources = len(set(groups[event.topic_hash]))
+                event.source_count = unique_sources
+
+        return events
+
+    def _compute_topic_hash(self, title: str) -> str:
+        """
+        제목: 주제 해시 계산
+        내용: 제목의 불용어를 제거한 뒤 상위 5 단어의 정렬된 조합으로 MD5 해시 생성.
+              유사한 제목끼리 동일 해시를 공유하여 교차검증에 활용됩니다.
+
+        Args:
+            title: 기사 제목
+
+        Returns:
+            str: 8자리 MD5 해시
+        """
+        stopwords = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "is", "are", "was"}
+        words = [w.lower().strip(".,!?") for w in title.split() if w.lower() not in stopwords]
+        key = " ".join(sorted(words[:5]))
+        return hashlib.md5(key.encode()).hexdigest()[:8]  # noqa: S324
+
+    def _is_within_window(self, published_at: datetime) -> bool:
+        """
+        제목: 수집 윈도우 범위 검증
+
+        Args:
+            published_at: 이벤트 발행 시각
+
+        Returns:
+            bool: window_hours 이내이면 True
+        """
+        now = datetime.now(UTC)
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=UTC)
+        return published_at >= now - timedelta(hours=self.window_hours)

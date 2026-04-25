@@ -1,109 +1,193 @@
-# investment-alert
+"""
+제목: AlertEngine 단위 테스트
+내용: MacroNewsResult → AlertSignal 변환, 쿨다운 로직, 발행 정책 적용을
+      Mock 기반으로 테스트합니다.
+"""
 
-미국 증시 긴급 Alert 감지 시스템 — 뉴스 및 YouTube 기반 실시간 시장 변동 감지.
+from __future__ import annotations
 
-## 개요
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
-Investment OS 생태계의 Alert 전담 서브시스템. 뉴스 및 유튜버 콘텐츠를 병렬 수집·분석하여 L1(CRITICAL)/L2(HIGH)/L3(MEDIUM) 레벨의 Alert를 자동 판정합니다.
+import pytest
 
-## 아키텍처
+from collectors.base import CollectorEvent
+from detection.alert_engine import PUBLISH_POLICY, AlertEngine
+from detection.macro_news_layer import MacroNewsResult
 
-```
-┌──────────────────────────────────────────────────────┐
-│           MacroNewsLayer (통합 감지 레이어)             │
-├──────────────────────────────────────────────────────┤
-│                                                      │
-│  ┌──────────────────┐     ┌──────────────────┐      │
-│  │  NewsCollector   │     │ YouTubeCollector │      │
-│  │                  │     │                  │      │
-│  │  ▸ Tier S/A/B    │     │  ▸ 4 채널        │      │
-│  │  ▸ RSS 기반       │     │  ▸ 48시간 윈도우 │      │
-│  │  ▸ 키워드 필터     │     │  ▸ 한글 키워드    │      │
-│  └────────┬─────────┘     └────────┬─────────┘      │
-│           │                        │                 │
-│           └──────────┬─────────────┘                 │
-│                      ▼                               │
-│           ┌──────────────────────┐                   │
-│           │   NewsValidator      │                   │
-│           │   (추측성/재탕 제외)   │                   │
-│           └──────────┬───────────┘                   │
-│                      ▼                               │
-│           ┌──────────────────────┐                   │
-│           │   Score 산출          │                   │
-│           │   Tier × Source      │                   │
-│           │   × YouTube Bonus    │                   │
-│           └──────────┬───────────┘                   │
-│                      ▼                               │
-│           ┌──────────────────────┐                   │
-│           │   L1/L2/L3 판정      │                   │
-│           └──────────────────────┘                   │
-└──────────────────────────────────────────────────────┘
-```
 
-## 프로젝트 구조
+def make_result(
+    level: str = "L2",
+    score: float = 5.5,
+    reasoning: str = "L2: score=5.5",
+    health_score: float = 0.85,
+    news_count: int = 1,
+    yt_count: int = 0,
+) -> MacroNewsResult:
+    def make_event(title: str, src: str) -> CollectorEvent:
+        return CollectorEvent(
+            source_type="news",
+            source_name=src,
+            event_id="abc",
+            title=title,
+            summary="",
+            url="https://x.com",
+            published_at=datetime.now(UTC),
+        )
 
-```
-investment-alert/
-├── collectors/            # 데이터 수집
-│   ├── base.py            #   BaseCollector + CollectorEvent
-│   ├── news_collector.py  #   Day 2
-│   └── youtube_collector.py #   Day 3
-├── validators/            # 이벤트 검증
-│   └── news_validator.py  #   Day 2
-├── detection/             # 감지 레이어
-│   └── macro_news_layer.py #   Day 4
-├── config/
-│   └── settings.py        # 환경변수 및 상수
-├── core/
-│   ├── exceptions.py      # 커스텀 예외
-│   └── logger.py          # 로거
-├── tests/                 # pytest 테스트
-├── pyproject.toml         # ruff 설정
-├── pytest.ini             # pytest 설정 (80% threshold)
-├── requirements.txt       # 의존성
-└── .github/workflows/
-    └── test.yml           # CI (ruff + pytest)
-```
+    news = [make_event(f"News {i}", "reuters") for i in range(news_count)]
+    yt = [make_event(f"YT {i}", "소수몽키") for i in range(yt_count)]
 
-## 빠른 시작
+    return MacroNewsResult(
+        score=score,
+        level=level,  # type: ignore[arg-type]
+        news_events=news,
+        youtube_events=yt,
+        news_score=score,
+        youtube_bonus=0.0,
+        top_news=news[:3],
+        top_youtube=yt[:3],
+        reasoning=reasoning,
+        health_score=health_score,
+    )
 
-```bash
-# 1. 의존성 설치
-python -m venv venv
-. venv/bin/activate
-pip install -r requirements.txt
 
-# 2. 환경변수 설정
-cp .env.example .env
-# .env 파일 편집
+@pytest.fixture
+def engine_no_store() -> AlertEngine:
+    return AlertEngine(alert_store=None)
 
-# 3. 테스트 (GTT팀 공통지침 11 준수)
-ruff check . --line-length=100
-pytest tests/ -v
-```
 
-## 개발 원칙
+@pytest.fixture
+def mock_store() -> MagicMock:
+    store = MagicMock()
+    store.is_cooldown_active.return_value = False
+    store.save_alert.return_value = True
+    store.set_cooldown.return_value = True
+    return store
 
-1. **반말 금지 (대화)** · **정확성 > 속도**
-2. **VERSION 상수 필수** (모든 모듈) + 실행 시작 로그에 버전 출력 (GTT팀 지침 5)
-3. **ruff + pytest 세트 통과** (GTT팀 지침 11)
-4. **coverage ≥ 80%** (pytest.ini fail_under 강제)
-5. **주석 표준**: 파일 헤더 / 클래스 / 함수 / 인라인 모두 `제목 + 내용` 포함
 
-## Alert 레벨 판정 규칙
+@pytest.fixture
+def engine_with_store(mock_store: MagicMock) -> AlertEngine:
+    return AlertEngine(alert_store=mock_store)
 
-| 레벨 | 조건 |
-|------|------|
-| L1 (CRITICAL) | Tier S 이벤트 OR (score ≥ 7.0 AND source_count ≥ 2 AND health ≥ 0.90) |
-| L2 (HIGH) | 5.0 ≤ score < 7.0 OR 유튜브 단독 긴급 (ai_score ≥ 6.0) |
-| L3 (MEDIUM) | 3.0 ≤ score < 5.0 |
-| NONE | score < 3.0 |
 
-## 상위 허브
+# ── alert_id 생성 ─────────────────────────────────────
+@pytest.mark.unit
+def test_process_generates_uuid_alert_id(engine_no_store: AlertEngine) -> None:
+    """alert_id는 UUID4 형식 (36자, 하이픈 포함)"""
+    signal = engine_no_store.process(make_result())
+    assert len(signal.alert_id) == 36
+    assert signal.alert_id.count("-") == 4
 
-- 자동화 허브(Notion): Investment OS — 자동화 허브
-- 세분화 허브(Notion): investment Alert - 세분화
 
-## 라이선스
+# ── 발행 정책 적용 ────────────────────────────────────
+@pytest.mark.unit
+def test_l1_all_channels_published(engine_no_store: AlertEngine) -> None:
+    """L1: X + TG Free + TG Paid 모두 True"""
+    signal = engine_no_store.process(make_result(level="L1", score=8.0))
+    assert signal.publish_x is True
+    assert signal.publish_tg_free is True
+    assert signal.publish_tg_paid is True
 
-Private — EDT Investment Team
+
+@pytest.mark.unit
+def test_l2_tg_only_published(engine_no_store: AlertEngine) -> None:
+    """L2: X=False, TG Free=True, TG Paid=True"""
+    signal = engine_no_store.process(make_result(level="L2", score=5.5))
+    assert signal.publish_x is False
+    assert signal.publish_tg_free is True
+    assert signal.publish_tg_paid is True
+
+
+@pytest.mark.unit
+def test_l3_no_publish(engine_no_store: AlertEngine) -> None:
+    """L3: 모든 채널 False (로그만)"""
+    signal = engine_no_store.process(make_result(level="L3", score=3.5))
+    assert signal.publish_x is False
+    assert signal.publish_tg_free is False
+    assert signal.publish_tg_paid is False
+
+
+@pytest.mark.unit
+def test_none_no_publish(engine_no_store: AlertEngine) -> None:
+    """NONE: 모든 채널 False"""
+    signal = engine_no_store.process(make_result(level="NONE", score=1.0))
+    assert signal.should_publish is False
+
+
+# ── 쿨다운 로직 ───────────────────────────────────────
+@pytest.mark.unit
+def test_cooldown_active_blocks_publish(mock_store: MagicMock, engine_with_store: AlertEngine) -> None:
+    """쿨다운 활성이면 모든 채널 False"""
+    mock_store.is_cooldown_active.return_value = True
+    signal = engine_with_store.process(make_result(level="L2"))
+    assert signal.is_cooldown_active is True
+    assert signal.should_publish is False
+    assert signal.publish_tg_free is False
+
+
+@pytest.mark.unit
+def test_cooldown_inactive_allows_publish(mock_store: MagicMock, engine_with_store: AlertEngine) -> None:
+    """쿨다운 비활성이면 정책대로 발행"""
+    mock_store.is_cooldown_active.return_value = False
+    signal = engine_with_store.process(make_result(level="L2"))
+    assert signal.is_cooldown_active is False
+    assert signal.publish_tg_free is True
+
+
+@pytest.mark.unit
+def test_cooldown_check_skipped_for_none(mock_store: MagicMock, engine_with_store: AlertEngine) -> None:
+    """NONE 레벨은 쿨다운 조회 안 함"""
+    engine_with_store.process(make_result(level="NONE"))
+    mock_store.is_cooldown_active.assert_not_called()
+
+
+@pytest.mark.unit
+def test_cooldown_failure_allows_publish(mock_store: MagicMock, engine_with_store: AlertEngine) -> None:
+    """쿨다운 조회 실패 시 발행 허용 (보수적 처리)"""
+    mock_store.is_cooldown_active.side_effect = RuntimeError("DB error")
+    signal = engine_with_store.process(make_result(level="L2"))
+    assert signal.publish_tg_free is True
+
+
+# ── 감사로그 저장 ─────────────────────────────────────
+@pytest.mark.unit
+def test_save_alert_called_for_non_none(mock_store: MagicMock, engine_with_store: AlertEngine) -> None:
+    """NONE 아닌 레벨에서 save_alert 호출"""
+    engine_with_store.process(make_result(level="L2"))
+    mock_store.save_alert.assert_called_once()
+
+
+@pytest.mark.unit
+def test_save_alert_not_called_for_none(mock_store: MagicMock, engine_with_store: AlertEngine) -> None:
+    """NONE 레벨에서 save_alert 미호출"""
+    engine_with_store.process(make_result(level="NONE"))
+    mock_store.save_alert.assert_not_called()
+
+
+# ── AlertSignal 속성 ──────────────────────────────────
+@pytest.mark.unit
+def test_signal_fields_populated(engine_no_store: AlertEngine) -> None:
+    """AlertSignal 필드가 올바르게 채워짐"""
+    result = make_result(level="L2", score=5.5, news_count=2)
+    signal = engine_no_store.process(result)
+    assert signal.level == "L2"
+    assert abs(signal.score - 5.5) < 0.01
+    assert len(signal.top_news_titles) == 2
+    assert isinstance(signal.created_at, datetime)
+
+
+@pytest.mark.unit
+def test_signal_should_publish_l2(engine_no_store: AlertEngine) -> None:
+    """L2 should_publish = True (쿨다운 없음)"""
+    signal = engine_no_store.process(make_result(level="L2"))
+    assert signal.should_publish is True
+
+
+@pytest.mark.unit
+def test_publish_policy_completeness() -> None:
+    """PUBLISH_POLICY가 모든 레벨을 포함"""
+    for level in ("L1", "L2", "L3", "NONE"):
+        assert level in PUBLISH_POLICY
+        for ch in ("x", "tg_free", "tg_paid"):
+            assert ch in PUBLISH_POLICY[level]
