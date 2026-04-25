@@ -1,0 +1,61 @@
+# ────────────────────────────────────────────────────────
+# investment-alert Alert 파이프라인
+# 10분 주기 자동 실행 + 수동 실행 지원
+# ────────────────────────────────────────────────────────
+
+name: Alert Pipeline
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # 10분 주기
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'DRY_RUN 모드 (true=모의, false=실발행)'
+        type: boolean
+        default: true
+
+jobs:
+  alert:
+    name: Alert Detection & Publish
+    runs-on: ubuntu-latest
+
+    env:
+      # 운영 제어
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && 'false' || 'true' }}
+
+      # YouTube 채널
+      YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
+
+      # Supabase (결정 1,2: B — Supabase 연동)
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+      # X API (L1 발행)
+      X_API_KEY:            ${{ secrets.X_API_KEY }}
+      X_API_SECRET:         ${{ secrets.X_API_SECRET }}
+      X_ACCESS_TOKEN:       ${{ secrets.X_ACCESS_TOKEN }}
+      X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+
+      # Telegram Bot
+      TELEGRAM_BOT_TOKEN:       ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
+      TELEGRAM_PAID_CHANNEL_ID: ${{ secrets.TELEGRAM_PAID_CHANNEL_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Alert Pipeline
+        run: python run_alert.py
