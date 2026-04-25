@@ -144,7 +144,7 @@ NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
     },
     "A": {
         "reuters_markets": {
-            "url": "https://feeds.reuters.com/reuters/businessNews",
+            "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
             "auto_l1": False,
         },
         "wsj_markets": {
