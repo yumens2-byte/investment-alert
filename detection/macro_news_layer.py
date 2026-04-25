@@ -27,6 +27,9 @@ from collectors.youtube_collector import YouTubeCollector
 from config.market_calendar import get_market_profile, get_threshold_for_profile
 from config.settings import LEVEL_THRESHOLDS, TIER_WEIGHTS
 from core.logger import get_logger
+from db.dq_store import DataQualityStore
+from detection.dq_monitor import DataQualityMonitor, DataQualityState
+from detection.reasoning_builder import ReasoningBuilder
 
 VERSION = "1.0.0"
 
@@ -35,7 +38,7 @@ logger = get_logger(__name__)
 # ────────────────────────────────────────────────────────
 # 타입 정의
 # ────────────────────────────────────────────────────────
-AlertLevel = Literal["L1", "L2", "L3", "NONE"]
+AlertLevel = Literal["L1", "L2", "L3", "NONE", "SYSTEM_DEGRADED"]
 
 
 # ────────────────────────────────────────────────────────
@@ -71,6 +74,9 @@ class MacroNewsResult:
 
     reasoning: str = ""  # 레벨 판정 근거 (감사 추적용)
     health_score: float = 1.0  # 데이터 건강도 (0.0 ~ 1.0)
+    reasoning_json: dict = field(default_factory=dict)  # FR-05 표준화 reasoning (JSONB)
+    policy_version: str = "v1.0.0"  # 적용된 정책 버전 (semver)
+    dq_state: DataQualityState | None = None  # FR-03 데이터 품질 평가 결과
 
 
 # ────────────────────────────────────────────────────────
@@ -107,6 +113,10 @@ class MacroNewsLayer:
         youtube_collector: YouTubeCollector,
         tier_weights: dict[str, float] | None = None,
         level_thresholds: dict[str, float] | None = None,
+        dq_monitor: DataQualityMonitor | None = None,
+        reasoning_builder: ReasoningBuilder | None = None,
+        dq_store: DataQualityStore | None = None,
+        policy_version: str = "v1.0.0",
     ) -> None:
         """
         제목: MacroNewsLayer 초기화
@@ -116,13 +126,25 @@ class MacroNewsLayer:
             youtube_collector: YouTubeCollector 인스턴스 (의존성 주입)
             tier_weights: Tier별 가중치 오버라이드 (None이면 settings 기본값)
             level_thresholds: 레벨 임계값 오버라이드 (None이면 settings 기본값)
+            dq_monitor: DataQualityMonitor 인스턴스 (None이면 자동 생성)
+            reasoning_builder: ReasoningBuilder 인스턴스 (None이면 자동 생성)
+            dq_store: DataQualityStore 인스턴스 (None이면 자동 생성, DB 적재용)
+            policy_version: 적용된 정책 버전 (env POLICY_VERSION 또는 'v1.0.0')
         """
         self.news_collector = news_collector
         self.youtube_collector = youtube_collector
         self.tier_weights = tier_weights or TIER_WEIGHTS
         self.thresholds = level_thresholds or LEVEL_THRESHOLDS
 
-        logger.info(f"[MacroNewsLayer] v{VERSION} 초기화")
+        # 신규 의존성 — 미주입 시 자동 생성 (기존 호출자 호환성)
+        self.dq_monitor = dq_monitor or DataQualityMonitor()
+        self.reasoning_builder = reasoning_builder or ReasoningBuilder()
+        self.dq_store = dq_store or DataQualityStore()
+        self.policy_version = policy_version
+
+        logger.info(
+            f"[MacroNewsLayer] v{VERSION} 초기화 (policy={self.policy_version})"
+        )
 
     def detect(self) -> MacroNewsResult:
         """
@@ -141,21 +163,55 @@ class MacroNewsLayer:
         Returns:
             MacroNewsResult: 감지 결과 전체
         """
+        from datetime import UTC, datetime
+        cycle_started_at = datetime.now(UTC)
         logger.info("[MacroNewsLayer] 감지 시작")
 
-        # Step 1: 뉴스 수집
+        # Step 1: 뉴스 수집 (source 성공/실패 추적용 dict 준비)
+        source_results: dict[str, bool] = {}
         news_events: list[CollectorEvent] = []
         try:
             news_events = self.news_collector.collect()
+            source_results["news_collector"] = True
         except Exception as e:
             logger.error(f"[MacroNewsLayer] 뉴스 수집 실패 (계속 진행): {type(e).__name__}: {e}")
+            source_results["news_collector"] = False
 
         # Step 2: YouTube 수집
         youtube_events: list[CollectorEvent] = []
         try:
             youtube_events = self.youtube_collector.collect()
+            source_results["youtube_collector"] = True
         except Exception as e:
             logger.error(f"[MacroNewsLayer] YouTube 수집 실패 (계속 진행): {type(e).__name__}: {e}")
+            source_results["youtube_collector"] = False
+
+        # Step 2.5 (신규): 데이터 품질 평가 (DQ Monitor)
+        cycle_finished_at = datetime.now(UTC)
+        try:
+            dq_state = self.dq_monitor.evaluate(
+                cycle_started_at=cycle_started_at,
+                cycle_finished_at=cycle_finished_at,
+                source_results=source_results,
+                news_events=news_events,
+                youtube_events=youtube_events,
+                baseline_volume_avg=None,  # Phase 2에서 weekly_tracker 연동 예정
+            )
+            # DQ 결과를 Supabase에 INSERT (실패해도 파이프라인 계속)
+            self.dq_store.save_dq_state(dq_state)
+        except Exception as e:
+            logger.error(f"[MacroNewsLayer] DQ 평가 실패 (안전 모드 — degraded=False 가정): {e}")
+            dq_state = DataQualityState(
+                fresh_event_ratio=0.0,
+                source_success_rate=0.0,
+                lag_seconds_p95=0.0,
+                volume_zscore=None,
+                degraded_flag=False,  # 안전: 평가 실패 시 정상 판정 유지
+                degraded_reasons=[],
+                cycle_started_at=cycle_started_at,
+                cycle_finished_at=cycle_finished_at,
+                source_results=source_results,
+            )
 
         # Step 3: 점수 산출
         news_score = self._compute_news_score(news_events)
@@ -174,9 +230,10 @@ class MacroNewsLayer:
             f"(L1임계={dynamic_thresholds['l1_score']}, L2임계={dynamic_thresholds['l2_score']})"
         )
 
-        # Step 5: 레벨 판정 (동적 임계값 적용)
-        level, reasoning = self._judge_level(
-            final_score, news_events, health_score, youtube_events, dynamic_thresholds
+        # Step 5: 레벨 판정 (동적 임계값 적용 + DQ 우선 단락)
+        level, reasoning, contributing_factors = self._judge_level(
+            final_score, news_events, health_score, youtube_events,
+            dynamic_thresholds, dq_state=dq_state,
         )
 
         logger.info(
@@ -185,6 +242,23 @@ class MacroNewsLayer:
             f"level={level} health={health_score:.2f}"
         )
         logger.info(f"[MacroNewsLayer] 판정 근거: {reasoning}")
+
+        # Step 6: FR-05 표준화 reasoning 조립
+        reasoning_text, reasoning_json = self.reasoning_builder.build(
+            level=level,
+            score=final_score,
+            news_score=news_score,
+            yt_bonus=youtube_bonus,
+            semantic_bonus=0.0,  # Phase 2 임베딩 매칭 시 채움
+            thresholds_used=dynamic_thresholds,
+            market_profile=market_profile,
+            contributing_factors=contributing_factors,
+            health_components={
+                "health_score": health_score,
+            },
+            dq_state=dq_state,
+            policy_version=self.policy_version,
+        )
 
         return MacroNewsResult(
             score=round(final_score, 2),
@@ -195,8 +269,11 @@ class MacroNewsLayer:
             youtube_bonus=round(youtube_bonus, 2),
             top_news=news_events[:3],
             top_youtube=youtube_events[:3],
-            reasoning=reasoning,
+            reasoning=reasoning_text,
             health_score=round(health_score, 2),
+            reasoning_json=reasoning_json,
+            policy_version=self.policy_version,
+            dq_state=dq_state,
         )
 
     def _compute_news_score(self, events: list[CollectorEvent]) -> float:
@@ -375,7 +452,8 @@ class MacroNewsLayer:
         health_score: float,
         youtube_events: list[CollectorEvent] | None = None,
         thresholds: dict[str, float] | None = None,
-    ) -> tuple[AlertLevel, str]:
+        dq_state: DataQualityState | None = None,
+    ) -> tuple[AlertLevel, str, list[dict]]:
         """
         제목: Alert 레벨 판정
         내용: 3인 전문가 협의 설계서의 최종 레벨 판정 규칙을 구현합니다.
@@ -400,16 +478,37 @@ class MacroNewsLayer:
         """
         # 제목: 동적 임계값 적용 (FR-02)
         th = thresholds if thresholds is not None else self.thresholds
+        contributing_factors: list[dict] = []
+
+        # ── 0. SYSTEM_DEGRADED 우선 단락 (FR-03) ────────────────
+        if dq_state is not None and dq_state.degraded_flag:
+            contributing_factors.append({
+                "factor": "data_quality_degraded",
+                "weight": None,
+                "reasons": dq_state.degraded_reasons[:5],
+            })
+            reason = (
+                f"SYSTEM_DEGRADED: 수집 시스템 이상 감지 "
+                f"(success={dq_state.source_success_rate:.2f}, "
+                f"reasons={','.join(dq_state.degraded_reasons[:2])})"
+            )
+            return "SYSTEM_DEGRADED", reason, contributing_factors
 
         # ── 1. Tier S auto_l1 이벤트 → 무조건 L1 ─────────────
         tier_s_events = [e for e in news_events if e.auto_l1]
         if tier_s_events:
             sample = tier_s_events[0]
+            contributing_factors.append({
+                "factor": "tier_s_auto_l1",
+                "weight": None,
+                "matched_source": sample.source_name,
+                "title": sample.title[:60],
+            })
             reason = (
                 f"L1: Tier S auto_l1 이벤트 감지 "
                 f"(source={sample.source_name}, title='{sample.title[:40]}')"
             )
-            return "L1", reason
+            return "L1", reason, contributing_factors
 
         # ── 2. Score 기반 L1 판정 ──────────────────────────────
         max_source_count = max((e.source_count for e in news_events), default=0)
@@ -418,11 +517,17 @@ class MacroNewsLayer:
             and max_source_count >= L1_MIN_SOURCE_COUNT
             and health_score >= th["health_l1"]
         ):
+            contributing_factors.append({
+                "factor": "score_threshold_l1",
+                "weight": float(score),
+                "source_count": int(max_source_count),
+                "health_score": float(health_score),
+            })
             reason = (
                 f"L1: score={score:.2f} ≥ {th['l1_score']}, "
                 f"source_count={max_source_count}, health={health_score:.2f}"
             )
-            return "L1", reason
+            return "L1", reason, contributing_factors
 
         # ── 3. L1 건강도 미달 → L2 강등 ──────────────────────
         if (
@@ -430,19 +535,30 @@ class MacroNewsLayer:
             and max_source_count >= L1_MIN_SOURCE_COUNT
             and health_score < th["health_l1"]
         ):
+            contributing_factors.append({
+                "factor": "health_demotion_l1_to_l2",
+                "weight": float(score),
+                "health_score": float(health_score),
+                "health_l1_threshold": float(th["health_l1"]),
+            })
             reason = (
                 f"L2 (강등): score={score:.2f} L1 충족이나 "
                 f"health={health_score:.2f} < {th['health_l1']}"
             )
-            return "L2", reason
+            return "L2", reason, contributing_factors
 
         # ── 4. Score 기반 L2 판정 ──────────────────────────────
         if score >= th["l2_score"] and health_score >= th["health_l2"]:
+            contributing_factors.append({
+                "factor": "score_threshold_l2",
+                "weight": float(score),
+                "health_score": float(health_score),
+            })
             reason = (
                 f"L2: score={score:.2f} ≥ {th['l2_score']}, "
                 f"health={health_score:.2f}"
             )
-            return "L2", reason
+            return "L2", reason, contributing_factors
 
         # ── 5. YouTube 단독 긴급 → L2 ─────────────────────────
         # 뉴스 미감지 + YouTube 이벤트 중 ai_score or keyword×weight 가 임계 이상
@@ -452,23 +568,38 @@ class MacroNewsLayer:
                 for e in youtube_events
             )
             if yt_max_score >= YOUTUBE_SOLO_L2_MIN_SCORE and health_score >= th["health_l2"]:
+                contributing_factors.append({
+                    "factor": "youtube_solo_urgent",
+                    "weight": float(yt_max_score),
+                    "health_score": float(health_score),
+                })
                 reason = (
                     f"L2 (YouTube 단독): 뉴스 미감지, "
                     f"YouTube 최고점수={yt_max_score:.2f} ≥ {YOUTUBE_SOLO_L2_MIN_SCORE}"
                 )
-                return "L2", reason
+                return "L2", reason, contributing_factors
 
         # ── 6. Score 기반 L3 판정 ──────────────────────────────
         if score >= th["l3_score"] and health_score >= th["health_l3"]:
+            contributing_factors.append({
+                "factor": "score_threshold_l3",
+                "weight": float(score),
+                "health_score": float(health_score),
+            })
             reason = (
                 f"L3: score={score:.2f} ≥ {th['l3_score']}, "
                 f"health={health_score:.2f}"
             )
-            return "L3", reason
+            return "L3", reason, contributing_factors
 
         # ── 7. 미달 → NONE ─────────────────────────────────────
+        contributing_factors.append({
+            "factor": "below_threshold",
+            "weight": float(score),
+            "health_score": float(health_score),
+        })
         reason = (
             f"NONE: score={score:.2f} < {th['l3_score']} 또는 "
             f"health={health_score:.2f} 미달"
         )
-        return "NONE", reason
+        return "NONE", reason, contributing_factors

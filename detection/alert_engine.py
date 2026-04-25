@@ -30,10 +30,11 @@ logger = get_logger(__name__)
 # L2: TG Free + TG Paid
 # L3: 로그만 (발행 없음)
 PUBLISH_POLICY: dict[str, dict[str, bool]] = {
-    "L1": {"x": True,  "tg_free": True,  "tg_paid": True},
-    "L2": {"x": False, "tg_free": True,  "tg_paid": True},
-    "L3": {"x": False, "tg_free": False, "tg_paid": False},
-    "NONE": {"x": False, "tg_free": False, "tg_paid": False},
+    "L1":              {"x": True,  "tg_free": True,  "tg_paid": True,  "tg_internal": True},
+    "L2":              {"x": False, "tg_free": True,  "tg_paid": True,  "tg_internal": True},
+    "L3":              {"x": False, "tg_free": False, "tg_paid": False, "tg_internal": True},
+    "SYSTEM_DEGRADED": {"x": False, "tg_free": False, "tg_paid": False, "tg_internal": True},
+    "NONE":            {"x": False, "tg_free": False, "tg_paid": False, "tg_internal": False},
 }
 
 
@@ -64,22 +65,39 @@ class AlertSignal:
     publish_x: bool = False
     publish_tg_free: bool = False
     publish_tg_paid: bool = False
+    publish_tg_internal: bool = False  # FR-04 신규 채널
 
     # 쿨다운 활성이면 발행 스킵
     is_cooldown_active: bool = False
+
+    # FR-05 표준화 reasoning + 정책 추적
+    reasoning_json: dict = field(default_factory=dict)
+    policy_version: str = "v1.0.0"
+
+    # B5 패치 — save_alert 성공 여부 (False면 run_alert가 fallback 처리)
+    audit_persisted: bool = True
+
+    # SYSTEM_DEGRADED 발행 시 dq_state dict (format_degraded용)
+    dq_state_dict: dict | None = None
 
     @property
     def should_publish(self) -> bool:
         """
         제목: 발행 필요 여부
         내용: 쿨다운 미활성이고 최소 1개 채널 발행 대상이면 True.
+              tg_internal 채널도 포함됨.
 
         Returns:
             bool: 발행 필요하면 True
         """
         if self.is_cooldown_active:
             return False
-        return self.publish_x or self.publish_tg_free or self.publish_tg_paid
+        return (
+            self.publish_x
+            or self.publish_tg_free
+            or self.publish_tg_paid
+            or self.publish_tg_internal
+        )
 
 
 class AlertEngine:
@@ -141,6 +159,17 @@ class AlertEngine:
         top_news_titles = [e.title for e in result.top_news]
         top_youtube_titles = [e.title for e in result.top_youtube]
 
+        # FR-05 / M-01에서 추가된 result 필드 안전 추출 (M-01 미적용 환경 호환)
+        reasoning_json = getattr(result, "reasoning_json", {}) or {}
+        policy_version = getattr(result, "policy_version", "v1.0.0")
+        dq_state_obj = getattr(result, "dq_state", None)
+        dq_state_dict = None
+        if dq_state_obj is not None:
+            try:
+                dq_state_dict = dq_state_obj.to_dict()
+            except AttributeError:
+                dq_state_dict = None
+
         signal = AlertSignal(
             alert_id=alert_id,
             level=level,
@@ -153,21 +182,25 @@ class AlertEngine:
             publish_x=policy["x"] and not is_cooldown,
             publish_tg_free=policy["tg_free"] and not is_cooldown,
             publish_tg_paid=policy["tg_paid"] and not is_cooldown,
+            publish_tg_internal=policy.get("tg_internal", False) and not is_cooldown,
             is_cooldown_active=is_cooldown,
+            reasoning_json=reasoning_json,
+            policy_version=policy_version,
+            dq_state_dict=dq_state_dict,
         )
 
-        # 제목: Supabase 감사로그 저장 (결정 2: B)
+        # 제목: Supabase 감사로그 저장 + B5 fallback
         if self.alert_store and level != "NONE":
+            top_news_data = [
+                {"title": e.title, "source": e.source_name}
+                for e in result.top_news
+            ]
+            top_yt_data = [
+                {"title": e.title, "channel": e.source_name}
+                for e in result.top_youtube
+            ]
             try:
-                top_news_data = [
-                    {"title": e.title, "source": e.source_name}
-                    for e in result.top_news
-                ]
-                top_yt_data = [
-                    {"title": e.title, "channel": e.source_name}
-                    for e in result.top_youtube
-                ]
-                self.alert_store.save_alert(  # type: ignore[union-attr]
+                ok = self.alert_store.save_alert(  # type: ignore[union-attr]
                     alert_id=alert_id,
                     level=level,
                     score=result.score,
@@ -175,9 +208,27 @@ class AlertEngine:
                     reasoning=result.reasoning,
                     top_news=top_news_data,
                     top_youtube=top_yt_data,
+                    reasoning_json=reasoning_json,
+                    policy_version=policy_version,
                 )
+                signal.audit_persisted = bool(ok)
             except Exception as e:
-                logger.warning(f"[AlertEngine] 감사로그 저장 실패 (발행은 계속): {e}")
+                logger.warning(f"[AlertEngine] 감사로그 저장 예외 (발행은 계속): {e}")
+                signal.audit_persisted = False
+
+            # B5: save_alert 실패 시 즉시 로컬 fallback 기록
+            if not signal.audit_persisted:
+                from core.audit_fallback import append_audit_fallback
+                append_audit_fallback({
+                    "stage": "save_alert",
+                    "alert_id": alert_id,
+                    "level": level,
+                    "score": result.score,
+                    "health_score": result.health_score,
+                    "reasoning": result.reasoning,
+                    "policy_version": policy_version,
+                    "reason": "save_alert_returned_false_or_raised",
+                })
 
         # ── FR-04: topic_hash 중복 억제 ──────────────────────────
         # 내용: 동일 주제가 90분 내 재감지되면 발행 억제 (요약 발행 신호 포함)

@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/yumens2-byte/investment-alert/docs/reasoning_v1.json",
+  "title": "ia_alert_history.reasoning_json schema v1.0",
+  "description": "FR-05 표준화 reasoning JSONB 스키마. ReasoningBuilder.build() 반환값과 일치.",
+  "type": "object",
+  "required": [
+    "version",
+    "policy_version",
+    "score_breakdown",
+    "thresholds_used",
+    "contributing_factors"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "스키마 버전 (현 버전 1.0 고정)",
+      "const": "1.0"
+    },
+    "policy_version": {
+      "description": "판정에 사용된 정책 버전 (semver)",
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "market_profile": {
+      "description": "시장 시간대 — config/market_calendar.py 출력값과 동기",
+      "enum": ["intraday", "extended", "holiday"]
+    },
+    "score_breakdown": {
+      "description": "최종 score 산출 부분점수 (소수점 3자리)",
+      "type": "object",
+      "required": ["news_score", "yt_bonus"],
+      "additionalProperties": false,
+      "properties": {
+        "news_score": {
+          "description": "뉴스 부분 점수",
+          "type": "number"
+        },
+        "yt_bonus": {
+          "description": "YouTube 보너스",
+          "type": "number"
+        },
+        "semantic_bonus": {
+          "description": "Phase 2 임베딩 매칭 보너스 (Phase 1은 0)",
+          "type": ["number", "null"]
+        }
+      }
+    },
+    "thresholds_used": {
+      "description": "판정 시점에 적용된 임계값 (l1, l2, health_l1 등 자유 키)",
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "contributing_factors": {
+      "description": "판정에 기여한 요소 리스트 (top-N, 기본 10건 제한)",
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["factor"],
+        "properties": {
+          "factor": {
+            "description": "요소 식별자 (예: tier_s_auto_l1, keyword_match)",
+            "type": "string"
+          },
+          "weight": {
+            "description": "이 요소가 score에 기여한 가중치 (없으면 null)",
+            "type": ["number", "null"]
+          },
+          "matched_source": {
+            "description": "매칭된 소스 이름 (선택)",
+            "type": "string"
+          },
+          "keywords": {
+            "description": "매칭 키워드 (선택)",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "similarity": {
+            "description": "Phase 2 임베딩 유사도 (선택)",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "health_components": {
+      "description": "health_score 구성 요소 (소수점 3자리)",
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "degraded_signals": {
+      "description": "DataQualityMonitor 감지 reasons. degraded_flag=False이면 빈 배열.",
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

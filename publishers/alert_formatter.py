@@ -46,6 +46,12 @@ LEVEL_META: dict[str, dict[str, str]] = {
         "x_prefix": "📊 [모니터링]",
         "tg_header": "📊 <b>[L3 MEDIUM 모니터링]</b>",
     },
+    "SYSTEM_DEGRADED": {
+        "emoji": "🛠️",
+        "label": "DEGRADED",
+        "x_prefix": "🛠️ [시스템 경보]",
+        "tg_header": "🛠️ <b>[SYSTEM_DEGRADED 운영 경보]</b>",
+    },
 }
 
 # X 메시지 최대 길이
@@ -169,5 +175,146 @@ class AlertFormatter:
             lines.append("")
 
         lines.append(f"<code>ID: {alert_id[:8]}</code> | ⚠️ 투자 참고 정보")
+
+        return "\n".join(lines)
+
+    def format_internal(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+        top_youtube_titles: list[str],
+        health_score: float,
+        alert_id: str,
+        playbook: list[str] | None = None,
+    ) -> str:
+        """
+        제목: TG 내부 운영 채널 발행 메시지 포맷
+        내용: L1/L2/L3 모두 + SYSTEM_DEGRADED 모두 내부 채널로 발송될 때 사용.
+              format_tg와 유사하나 운영자 친화적 정보 포함:
+              - alert_id 전체 노출 (8자만이 아닌)
+              - reasoning 풀텍스트
+              - playbook 체크리스트 (FR-06 Phase 2 연동)
+
+        Args:
+            level: 'L1'|'L2'|'L3'|'SYSTEM_DEGRADED'
+            score: Macro-News Score (SYSTEM_DEGRADED는 0.0)
+            reasoning: 판정 근거 (ReasoningBuilder 텍스트)
+            top_news_titles: 상위 뉴스 제목 리스트
+            top_youtube_titles: 상위 YouTube 제목 리스트
+            health_score: 데이터 건강도
+            alert_id: 감사 추적 키 (전체 노출)
+            playbook: 운영 체크리스트 (FR-06, Phase 2 채움)
+
+        Returns:
+            str: HTML 포맷 내부 메시지
+        """
+        meta = LEVEL_META.get(level, LEVEL_META["L3"])
+
+        lines = [
+            f"{meta['tg_header']}  <i>(내부)</i>",
+            "",
+            f"📊 Score: <b>{score:.2f}</b> | Health: <b>{health_score:.2f}</b>",
+            "",
+            "📝 <b>판정 근거</b>",
+            f"  {reasoning}",
+            "",
+        ]
+
+        if top_news_titles:
+            lines.append("📰 <b>상위 뉴스</b>")
+            for i, title in enumerate(top_news_titles[:3], 1):
+                lines.append(f"  {i}. {title[:80]}")
+            lines.append("")
+
+        if top_youtube_titles:
+            lines.append("📺 <b>YouTube 확인</b>")
+            for i, title in enumerate(top_youtube_titles[:2], 1):
+                lines.append(f"  {i}. {title[:60]}")
+            lines.append("")
+
+        if playbook:
+            lines.append("📋 <b>운영 체크리스트</b>")
+            for item in playbook[:5]:
+                lines.append(f"  • {item}")
+            lines.append("")
+
+        lines.append(f"<code>alert_id: {alert_id}</code>")
+
+        return "\n".join(lines)
+
+    def format_degraded(
+        self,
+        dq_state: dict | None,
+        alert_id: str,
+    ) -> str:
+        """
+        제목: SYSTEM_DEGRADED 전용 내부 운영 메시지 포맷
+        내용: DataQualityState 정보를 운영자 친화적으로 정리한다.
+              dq_state는 DataQualityState.to_dict() 결과(dict) 또는 dataclass 직접 전달 모두 지원.
+
+        Args:
+            dq_state: DataQualityState (dict 또는 dataclass). None 가능.
+            alert_id: 감사 추적 키
+
+        Returns:
+            str: HTML 포맷 SYSTEM_DEGRADED 메시지
+        """
+        meta = LEVEL_META.get("SYSTEM_DEGRADED", LEVEL_META["L3"])
+
+        # dq_state가 dataclass면 to_dict() 호출, dict면 그대로 사용
+        if dq_state is None:
+            state_dict: dict = {}
+        elif isinstance(dq_state, dict):
+            state_dict = dq_state
+        else:
+            # DataQualityState dataclass 가정 — to_dict() 메서드 호출
+            try:
+                state_dict = dq_state.to_dict()
+            except AttributeError:
+                state_dict = {}
+
+        success = state_dict.get("source_success_rate", 0.0)
+        fresh = state_dict.get("fresh_event_ratio", 0.0)
+        lag = state_dict.get("lag_seconds_p95", 0.0)
+        reasons = state_dict.get("degraded_reasons", []) or []
+        source_results = state_dict.get("source_results", {}) or {}
+
+        # 실패 소스 추출
+        failed_sources = [name for name, ok in source_results.items() if not ok]
+
+        lines = [
+            meta["tg_header"],
+            "",
+            "⚠️ <b>수집 시스템 이상이 감지되었습니다</b>",
+            "",
+            "📊 <b>지표</b>",
+            f"  • source_success_rate: <b>{success:.2f}</b>",
+            f"  • fresh_event_ratio: <b>{fresh:.2f}</b>",
+            f"  • lag_seconds_p95: <b>{lag:.1f}s</b>",
+            "",
+        ]
+
+        if failed_sources:
+            lines.append("❌ <b>실패한 소스</b>")
+            for name in failed_sources[:5]:
+                lines.append(f"  • {name}")
+            lines.append("")
+
+        if reasons:
+            lines.append("🔍 <b>위반 사유</b>")
+            for r in reasons[:5]:
+                lines.append(f"  • <code>{r}</code>")
+            lines.append("")
+
+        lines.extend([
+            "🛠️ <b>조치 권고</b>",
+            "  • GitHub Actions 로그 확인",
+            "  • RSS 피드 URL 상태 점검",
+            "  • Notion 에러 회고 페이지에 기록",
+            "",
+            f"<code>alert_id: {alert_id}</code>",
+        ])
 
         return "\n".join(lines)

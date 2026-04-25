@@ -91,8 +91,8 @@ def main() -> None:
     # ── Step 6: 채널별 발행 ──────────────────────────────────
     logger.info(f"[run_alert] Step 6: {signal.level} 발행 시작")
 
-    x_ok = tg_free_ok = tg_paid_ok = False
-    x_err = tg_free_err = tg_paid_err = None
+    x_ok = tg_free_ok = tg_paid_ok = tg_internal_ok = False
+    x_err = tg_free_err = tg_paid_err = tg_internal_err = None
 
     x_msg = formatter.format_x(
         level=signal.level,
@@ -134,25 +134,75 @@ def main() -> None:
             tg_paid_err = str(e)
             logger.error(f"[run_alert] TG Paid 발행 실패: {e}")
 
-    # ── Step 7: 발행 결과 기록 ───────────────────────────────
-    alert_store.update_publish_result(
-        alert_id=signal.alert_id,
-        x_published=x_ok,
-        tg_free_published=tg_free_ok,
-        tg_paid_published=tg_paid_ok,
-        x_error=x_err,
-        tg_free_error=tg_free_err,
-        tg_paid_error=tg_paid_err,
-    )
+    if signal.publish_tg_internal:
+        try:
+            if signal.level == "SYSTEM_DEGRADED":
+                internal_msg = formatter.format_degraded(
+                    dq_state=signal.dq_state_dict,
+                    alert_id=signal.alert_id,
+                )
+            else:
+                internal_msg = formatter.format_internal(
+                    level=signal.level,
+                    score=signal.score,
+                    reasoning=signal.reasoning,
+                    top_news_titles=signal.top_news_titles,
+                    top_youtube_titles=signal.top_youtube_titles,
+                    health_score=signal.health_score,
+                    alert_id=signal.alert_id,
+                    playbook=None,  # Phase 2에서 playbook 주입
+                )
+            tg_pub.publish_internal(internal_msg)
+            tg_internal_ok = True
+        except Exception as e:
+            tg_internal_err = str(e)
+            logger.error(f"[run_alert] TG Internal 발행 실패: {e}")
+
+    # ── Step 7: 발행 결과 기록 (B5 패치 — audit fallback 분기) ───
+    if signal.audit_persisted:
+        alert_store.update_publish_result(
+            alert_id=signal.alert_id,
+            x_published=x_ok,
+            tg_free_published=tg_free_ok,
+            tg_paid_published=tg_paid_ok,
+            x_error=x_err,
+            tg_free_error=tg_free_err,
+            tg_paid_error=tg_paid_err,
+            tg_internal_published=tg_internal_ok,
+            tg_internal_error=tg_internal_err,
+        )
+    else:
+        # B5: save_alert 실패 → update 불가능. 발행 결과를 fallback에 추가 기록
+        from core.audit_fallback import append_audit_fallback
+        append_audit_fallback({
+            "stage": "publish_result",
+            "alert_id": signal.alert_id,
+            "level": signal.level,
+            "x_published": x_ok,
+            "tg_free_published": tg_free_ok,
+            "tg_paid_published": tg_paid_ok,
+            "tg_internal_published": tg_internal_ok,
+            "x_error": x_err,
+            "tg_free_error": tg_free_err,
+            "tg_paid_error": tg_paid_err,
+            "tg_internal_error": tg_internal_err,
+            "reason": "audit_fallback_due_to_save_alert_failure",
+        })
+        logger.warning(
+            f"[run_alert] audit_persisted=False — fallback JSONL 기록 "
+            f"(alert_id={signal.alert_id[:8]}, x={x_ok}, tg_free={tg_free_ok}, "
+            f"tg_paid={tg_paid_ok}, tg_internal={tg_internal_ok})"
+        )
 
     # ── Step 8: 쿨다운 설정 ──────────────────────────────────
-    if tg_free_ok or tg_paid_ok or x_ok:
+    if tg_free_ok or tg_paid_ok or x_ok or tg_internal_ok:
         alert_store.set_cooldown(level=signal.level, alert_id=signal.alert_id)
         logger.info(f"[run_alert] {signal.level} 쿨다운 설정 완료")
 
     logger.info(
         f"[run_alert] 완료: level={signal.level}, "
-        f"x={x_ok}, tg_free={tg_free_ok}, tg_paid={tg_paid_ok}"
+        f"x={x_ok}, tg_free={tg_free_ok}, tg_paid={tg_paid_ok}, "
+        f"tg_internal={tg_internal_ok}, audit_persisted={signal.audit_persisted}"
     )
 
 

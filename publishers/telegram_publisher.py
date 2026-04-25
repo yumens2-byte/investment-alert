@@ -57,6 +57,7 @@ class TelegramPublisher:
         self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.free_channel_id = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "")
         self.paid_channel_id = os.getenv("TELEGRAM_PAID_CHANNEL_ID", "")
+        self.internal_channel_id = os.getenv("TELEGRAM_INTERNAL_CHANNEL_ID", "")
 
         logger.info(f"[TelegramPublisher] v{VERSION} 초기화 (dry_run={self.dry_run})")
 
@@ -83,6 +84,27 @@ class TelegramPublisher:
             str: message_id (DRY_RUN 시 "DRY_RUN")
         """
         return self._publish(text, channel_id=self.paid_channel_id, channel_name="PAID")
+
+    def publish_internal(self, text: str) -> str:
+        """
+        제목: TG 내부 운영 채널 발행 (FR-04 / B5 패치)
+        내용: L3 조기 전조, SYSTEM_DEGRADED 경보, save_alert 실패 등
+              운영자 전용 메시지를 발행한다. 일반 구독자에게는 노출되지 않음.
+
+        Args:
+            text: HTML 포맷 메시지
+
+        Returns:
+            str: message_id (DRY_RUN 시 "DRY_RUN")
+
+        Raises:
+            RuntimeError: TELEGRAM_INTERNAL_CHANNEL_ID 미설정 또는 발행 실패 시
+        """
+        return self._publish(
+            text,
+            channel_id=self.internal_channel_id,
+            channel_name="INTERNAL",
+        )
 
     def _publish(self, text: str, channel_id: str, channel_name: str) -> str:
         """

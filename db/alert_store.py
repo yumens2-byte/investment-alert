@@ -33,6 +33,7 @@ COOLDOWN_MINUTES: dict[str, int] = {
     "L1": 60,
     "L2": 90,
     "L3": 120,
+    "SYSTEM_DEGRADED": 30,  # 운영자 과다 알림 방지 (Phase 1 신규)
 }
 
 # 제목: 주제 해시 쿨다운 (FR-04)
@@ -104,6 +105,9 @@ class AlertStore:
         reasoning: str,
         top_news: list[dict],
         top_youtube: list[dict],
+        reasoning_json: dict | None = None,
+        policy_version: str | None = None,
+        published_channels: list[str] | None = None,
     ) -> bool:
         """
         제목: Alert 감사로그 저장
@@ -111,19 +115,22 @@ class AlertStore:
 
         Args:
             alert_id: UUID4 감사 추적 키
-            level: 'L1'|'L2'|'L3'|'NONE'
+            level: 'L1'|'L2'|'L3'|'NONE'|'SYSTEM_DEGRADED'
             score: Macro-News Score
             health_score: 데이터 건강도
-            reasoning: 판정 근거
+            reasoning: 판정 근거 (text)
             top_news: [{"title": str, "source": str}, ...]
             top_youtube: [{"title": str, "channel": str}, ...]
+            reasoning_json: FR-05 표준화 JSON (None이면 빈 dict로 저장)
+            policy_version: 적용된 정책 버전 (semver)
+            published_channels: 발행 성공 채널 리스트 (e.g. ["x","tg_free"])
 
         Returns:
             bool: 성공 시 True, 실패 시 False
         """
         try:
             client = self._get_client()
-            data = {
+            data: dict[str, object] = {
                 "alert_id": alert_id,
                 "level": level,
                 "score": score,
@@ -132,6 +139,15 @@ class AlertStore:
                 "top_news": top_news,
                 "top_youtube": top_youtube,
             }
+            # FR-05 신규 컬럼은 마이그레이션 적용 후에만 의미 있음
+            # 하지만 None이 아닐 때만 전송하여 마이그레이션 미적용 환경에서도 동작
+            if reasoning_json is not None:
+                data["reasoning_json"] = reasoning_json
+            if policy_version is not None:
+                data["policy_version"] = policy_version
+            if published_channels is not None:
+                data["published_channels"] = published_channels
+
             client.table(TABLE_ALERT_HISTORY).upsert(  # type: ignore[union-attr]
                 data, on_conflict="alert_id"
             ).execute()
@@ -150,10 +166,13 @@ class AlertStore:
         x_error: str | None = None,
         tg_free_error: str | None = None,
         tg_paid_error: str | None = None,
+        tg_internal_published: bool = False,
+        tg_internal_error: str | None = None,
     ) -> bool:
         """
         제목: 발행 결과 업데이트
         내용: 발행 성공/실패 여부를 ia_alert_history에 반영합니다.
+              FR-04에 따라 tg_internal 채널 결과도 기록한다.
 
         Args:
             alert_id: 대상 Alert ID
@@ -163,6 +182,8 @@ class AlertStore:
             x_error: X 발행 오류 메시지 (실패 시)
             tg_free_error: TG Free 오류 메시지
             tg_paid_error: TG Paid 오류 메시지
+            tg_internal_published: TG Internal 발행 성공 여부 (FR-04)
+            tg_internal_error: TG Internal 오류 메시지
 
         Returns:
             bool: 성공 시 True
@@ -174,12 +195,17 @@ class AlertStore:
                 "tg_free_published": tg_free_published,
                 "tg_paid_published": tg_paid_published,
             }
+            # tg_internal 컬럼은 마이그레이션 적용 후에만 의미 있음
+            # 기본값 False는 항상 전송, error는 None이 아닐 때만 전송
+            updates["tg_internal_published"] = tg_internal_published
             if x_error:
                 updates["x_error"] = x_error[:500]
             if tg_free_error:
                 updates["tg_free_error"] = tg_free_error[:500]
             if tg_paid_error:
                 updates["tg_paid_error"] = tg_paid_error[:500]
+            if tg_internal_error:
+                updates["tg_internal_error"] = tg_internal_error[:500]
 
             client.table(TABLE_ALERT_HISTORY).update(updates).eq(  # type: ignore[union-attr]
                 "alert_id", alert_id

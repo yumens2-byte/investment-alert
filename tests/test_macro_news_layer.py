@@ -40,7 +40,7 @@ def make_news_event(
         title=title,
         summary="",
         url=url,
-        published_at=datetime.now(UTC) - timedelta(hours=1),
+        published_at=datetime.now(UTC) - timedelta(minutes=30),
         tier=tier,
         auto_l1=auto_l1,
         keyword_score=keyword_score,
@@ -64,7 +64,7 @@ def make_yt_event(
         title="긴급속보 위기",
         summary="",
         url="https://yt.com/1",
-        published_at=datetime.now(UTC) - timedelta(hours=2),
+        published_at=datetime.now(UTC) - timedelta(minutes=45),
         tier=None,
         channel_weight=channel_weight,
         auto_l1=False,
@@ -174,7 +174,7 @@ def test_judge_level_tier_s_auto_l1() -> None:
     """Tier S auto_l1 이벤트 → 무조건 L1"""
     layer = make_layer()
     event = make_news_event(tier="S", auto_l1=True, ai_score=5.0)
-    level, reason = layer._judge_level(2.0, [event], health_score=0.5)
+    level, reason, _factors = layer._judge_level(2.0, [event], health_score=0.5)
     assert level == "L1"
     assert "auto_l1" in reason
 
@@ -184,7 +184,7 @@ def test_judge_level_l1_score_threshold() -> None:
     """score ≥ 7.0 + source_count ≥ 2 + health ≥ 0.90 → L1"""
     layer = make_layer()
     event = make_news_event(source_count=2)
-    level, reason = layer._judge_level(7.5, [event], health_score=0.95)
+    level, reason, _factors = layer._judge_level(7.5, [event], health_score=0.95)
     assert level == "L1"
 
 
@@ -193,7 +193,7 @@ def test_judge_level_l1_blocked_by_health() -> None:
     """L1 점수 충족이나 health < 0.90 → L2 강등"""
     layer = make_layer()
     event = make_news_event(source_count=2)
-    level, reason = layer._judge_level(7.5, [event], health_score=0.85)
+    level, reason, _factors = layer._judge_level(7.5, [event], health_score=0.85)
     assert level == "L2"
     assert "강등" in reason
 
@@ -203,7 +203,7 @@ def test_judge_level_l2_score_range() -> None:
     """5.0 ≤ score < 7.0 + health ≥ 0.80 → L2"""
     layer = make_layer()
     event = make_news_event()
-    level, reason = layer._judge_level(5.5, [event], health_score=0.85)
+    level, reason, _factors = layer._judge_level(5.5, [event], health_score=0.85)
     assert level == "L2"
 
 
@@ -212,7 +212,7 @@ def test_judge_level_l2_youtube_solo() -> None:
     """뉴스 없음 + YouTube 점수 ≥ 6.0 → L2"""
     layer = make_layer()
     yt_event = make_yt_event(channel_weight=1.3, ai_score=YOUTUBE_SOLO_L2_MIN_SCORE)
-    level, reason = layer._judge_level(
+    level, reason, _factors = layer._judge_level(
         score=YOUTUBE_SOLO_L2_MIN_SCORE * 1.3,
         news_events=[],
         health_score=0.85,
@@ -226,7 +226,7 @@ def test_judge_level_l3() -> None:
     """3.0 ≤ score < 5.0 → L3"""
     layer = make_layer()
     event = make_news_event()
-    level, _ = layer._judge_level(4.0, [event], health_score=0.75)
+    level, _, _factors = layer._judge_level(4.0, [event], health_score=0.75)
     assert level == "L3"
 
 
@@ -234,7 +234,7 @@ def test_judge_level_l3() -> None:
 def test_judge_level_none() -> None:
     """score < 3.0 → NONE"""
     layer = make_layer()
-    level, _ = layer._judge_level(2.0, [], health_score=1.0)
+    level, _, _factors = layer._judge_level(2.0, [], health_score=1.0)
     assert level == "NONE"
 
 
@@ -296,12 +296,16 @@ def test_detect_returns_macro_news_result() -> None:
 
 @pytest.mark.unit
 def test_detect_collector_failure_graceful() -> None:
-    """Collector 실패 시에도 NONE 레벨로 정상 반환"""
+    """Collector 실패 시 SYSTEM_DEGRADED 레벨로 graceful 반환 (FR-03 본 의도).
+    M-01 이전엔 NONE을 기대했으나, FR-03 적용 후엔 수집 실패가 DQ에서 감지되어
+    SYSTEM_DEGRADED로 분류되는 것이 정상."""
     news_mock = MagicMock()
     news_mock.collect.side_effect = RuntimeError("RSS 연결 실패")
     yt_mock = MagicMock()
     yt_mock.collect.return_value = []
     layer = MacroNewsLayer(news_collector=news_mock, youtube_collector=yt_mock)
     result = layer.detect()
-    assert result.level == "NONE"
+    assert result.level == "SYSTEM_DEGRADED"
     assert result.score == 0.0
+    assert result.dq_state is not None
+    assert result.dq_state.degraded_flag is True
