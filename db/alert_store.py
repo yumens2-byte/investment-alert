@@ -53,20 +53,14 @@ class AlertStore:
         supabase_url: str | None = None,
         supabase_key: str | None = None,
     ) -> None:
-        """
-        제목: AlertStore 초기화
-
-        Args:
-            supabase_url: Supabase 프로젝트 URL (None이면 환경변수 사용)
-            supabase_key: Supabase anon/service key (None이면 환경변수 사용)
-        """
-      raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
-      self._url = raw_url.rstrip("/") 
-      if raw_url else ""
-            self._key = supabase_key or os.getenv("SUPABASE_KEY", "")
-
-      self._client: object | None = None
-      logger.info(f"[AlertStore] v{VERSION} 초기화")
+        
+      # 제목: trailing slash 방어 처리
+      # 내용: URL 끝 슬래시 제거 — //rest/v1/... 이중 슬래시로 인한 PGRST125 방지
+        raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
+        self._url = raw_url.rstrip("/") if raw_url else ""
+        self._key = supabase_key or os.getenv("SUPABASE_KEY", "")
+        self._client: object | None = None
+        logger.info(f"[AlertStore] v{VERSION} 초기화")
 
     def _get_client(self) -> object:
         """
