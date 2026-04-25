@@ -58,7 +58,7 @@ class AlertStore:
 
         Args:
             supabase_url: Supabase 프로젝트 URL (None이면 환경변수 사용)
-            supabase_key: Supabase anon/service key (None이면 환경변수 사용)
+            supabase_key: Supabase anon/service key (None이면 환경변수 사용) 
         """
             raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
             self._url = raw_url.rstrip("/") if raw_url else ""
