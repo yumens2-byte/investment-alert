@@ -43,15 +43,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create log directory
-        run: mkdir -p logs
-
       - name: Anti-bot random delay (schedule only)
         if: github.event_name != 'workflow_dispatch'
         run: |
           DELAY=$((RANDOM % 200))
           echo "⏱️ Random delay: ${DELAY}s"
           sleep $DELAY
+
+      - name: Create log directory
+        run: mkdir -p logs
 
       - name: Run Diagnostics
         run: python run_diagnostics.py
