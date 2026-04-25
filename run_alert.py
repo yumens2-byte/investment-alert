@@ -40,20 +40,12 @@ def main() -> None:
       6. AlertStore.update_publish_result() — 발행 결과 기록
       7. AlertStore.set_cooldown() — 쿨다운 설정
     """
-    from datetime import datetime, UTC
-    _log_ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    _log_file = f"logs/run_alert_{_log_ts}.log"
-      
-     from datetime import datetime, UTC
+    from datetime import UTC, datetime
     _log_ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     _log_file = f"logs/run_alert_{_log_ts}.log"
     configure_root_logger(log_file=_log_file)
     logger = get_logger(__name__)
     logger.info(f"[run_alert] v{VERSION} 시작 — 로그파일: {_log_file}")
-    # configure_root_logger(log_file=_log_file)
-    # logger = get_logger(__name__)
-    # logger.info(f"[run_alert] v{VERSION} 시작 — 로그파일: {_log_file}")
-
 
     # ── Step 1: 의존성 초기화 ────────────────────────────────
     alert_store = AlertStore()
@@ -115,7 +107,6 @@ def main() -> None:
         alert_id=signal.alert_id,
     )
 
-    # X 발행 (L1만)
     if signal.publish_x:
         try:
             x_pub.publish(x_msg)
@@ -124,7 +115,6 @@ def main() -> None:
             x_err = str(e)
             logger.error(f"[run_alert] X 발행 실패: {e}")
 
-    # TG Free 발행 (L1/L2)
     if signal.publish_tg_free:
         try:
             tg_pub.publish_free(tg_msg)
@@ -133,7 +123,6 @@ def main() -> None:
             tg_free_err = str(e)
             logger.error(f"[run_alert] TG Free 발행 실패: {e}")
 
-    # TG Paid 발행 (L1/L2)
     if signal.publish_tg_paid:
         try:
             tg_pub.publish_paid(tg_msg)
