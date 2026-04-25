@@ -9,7 +9,7 @@
 # ── YouTube 채널 설정 ──────────────────────────────────
 # 포맷: "이름1:채널ID1,이름2:채널ID2,..."
 # 예시:
-YOUTUBE_CHANNELS=소수몽키:UCC3yfxS5qC6PCwDzetUuEWg,오선의 미국 증시 라이브:UC_JJ_NhRqPKcIOj5Ko3W_3w,전인구경제연구소:UCznImSIaxZR7fdLCICLdgaQ,미주은:UCNnwmqZOxSuOiF3_c7mAGWA
+
 
 # ── AI API 키 ─────────────────────────────────────────
 # Gemini API (Impact Scoring 용)
