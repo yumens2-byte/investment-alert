@@ -138,7 +138,7 @@ CHANNEL_WEIGHTS: dict[str, float] = {
 NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
     "S": {
         "fed_rss": {
-            "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+            "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",  # 통화정책 전용 (A안 적용 2026-04-25)
             "auto_l1": True,
         },
     },
