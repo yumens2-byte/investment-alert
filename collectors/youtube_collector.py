@@ -148,6 +148,10 @@ class YouTubeCollector(BaseCollector):
 
         logger.info(f"[YouTubeCollector] RSS 수집 완료: {len(raw_events)}건")
 
+        # B-fix: DQ Monitor용 raw events 보관 (키워드 필터 전)
+        # YouTube는 별도 validator가 없으므로 RSS 수집 결과 자체가 raw
+        self.last_raw_events = list(raw_events)
+
         # Step 2: 키워드 필터
         filtered = self._filter_by_keywords(raw_events)
         logger.info(f"[YouTubeCollector] 키워드 필터 후: {len(filtered)}건")

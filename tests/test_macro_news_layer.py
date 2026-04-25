@@ -81,8 +81,12 @@ def make_layer(
     """Mock Collector를 가진 MacroNewsLayer 생성 헬퍼"""
     news_mock = MagicMock()
     news_mock.collect.return_value = news_events or []
+    # B-fix (2026-04-26): DQ Monitor가 키워드 필터 *전*의 raw events를 사용
+    # mock collector도 last_raw_events 속성을 명시적으로 list로 설정
+    news_mock.last_raw_events = news_events or []
     yt_mock = MagicMock()
     yt_mock.collect.return_value = youtube_events or []
+    yt_mock.last_raw_events = youtube_events or []
     return MacroNewsLayer(news_collector=news_mock, youtube_collector=yt_mock)
 
 
@@ -301,8 +305,10 @@ def test_detect_collector_failure_graceful() -> None:
     SYSTEM_DEGRADED로 분류되는 것이 정상."""
     news_mock = MagicMock()
     news_mock.collect.side_effect = RuntimeError("RSS 연결 실패")
+    news_mock.last_raw_events = []  # 수집 실패 시 빈 list (B-fix 호환)
     yt_mock = MagicMock()
     yt_mock.collect.return_value = []
+    yt_mock.last_raw_events = []
     layer = MacroNewsLayer(news_collector=news_mock, youtube_collector=yt_mock)
     result = layer.detect()
     assert result.level == "SYSTEM_DEGRADED"

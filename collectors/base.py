@@ -146,6 +146,9 @@ class BaseCollector(ABC):
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        # B-fix (2026-04-26): DQ Monitor가 키워드 필터 *전*의 검증 통과 events를 참조하기 위함
+        # collect() 종료 시점에 하위 클래스가 검증 통과 raw events를 여기에 저장
+        self.last_raw_events: list[CollectorEvent] = []
 
     @abstractmethod
     def collect(self) -> list[CollectorEvent]:

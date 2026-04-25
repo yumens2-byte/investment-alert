@@ -188,13 +188,17 @@ class MacroNewsLayer:
 
         # Step 2.5 (신규): 데이터 품질 평가 (DQ Monitor)
         cycle_finished_at = datetime.now(UTC)
+        # B-fix: 키워드 필터 *전*의 raw events를 DQ에 전달 (수집 시스템 건강성 측정용)
+        # collect()의 결과(news_events)는 이미 키워드 필터 후 → DQ 입력으로 부적합
+        raw_news_events = list(getattr(self.news_collector, "last_raw_events", []) or [])
+        raw_youtube_events = list(getattr(self.youtube_collector, "last_raw_events", []) or [])
         try:
             dq_state = self.dq_monitor.evaluate(
                 cycle_started_at=cycle_started_at,
                 cycle_finished_at=cycle_finished_at,
                 source_results=source_results,
-                news_events=news_events,
-                youtube_events=youtube_events,
+                news_events=raw_news_events,
+                youtube_events=raw_youtube_events,
                 baseline_volume_avg=None,  # Phase 2에서 weekly_tracker 연동 예정
             )
             # DQ 결과를 Supabase에 INSERT (실패해도 파이프라인 계속)

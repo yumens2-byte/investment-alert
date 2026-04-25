@@ -178,6 +178,10 @@ class NewsCollector(BaseCollector):
         validated = self.validator.validate_all(raw_events)
         logger.info(f"[NewsCollector] 검증 후: {len(validated)}건")
 
+        # B-fix: DQ Monitor용 raw events 보관 (키워드 필터 전, 검증 통과 후)
+        # 이 시점이 "수집 시스템 건강성" 측정의 정확한 입력
+        self.last_raw_events = list(validated)
+
         # Step 3: 키워드 1차 필터
         filtered = self._filter_by_keywords(validated)
         logger.info(f"[NewsCollector] 키워드 필터 후: {len(filtered)}건")
@@ -241,7 +245,7 @@ class NewsCollector(BaseCollector):
                     events.append(event)
 
 
-                  
+
 
                 # 제목: 소스별 수집 결과 로그
                 collected = len(events) - source_count_before
