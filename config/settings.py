@@ -204,4 +204,7 @@ DEFAULT_RETRY_DELAY_SEC: float = 1.0
 # 제목: 이벤트 수집 시간 범위
 # 내용: 뉴스는 24시간, 유튜브는 48시간 (Day 3 보고서 기준)
 NEWS_WINDOW_HOURS: int = 24
-YOUTUBE_WINDOW_HOURS: int = 48
+# 제목: YouTube 수집 기준
+# 내용: 당일(UTC 00:00) 이후 영상만 수집 — YOUTUBE_WINDOW_HOURS는 레거시로 유지
+YOUTUBE_WINDOW_HOURS: int = 48  # 레거시 (youtube_collector에서 당일 기준으로 오버라이드)
+YOUTUBE_TODAY_ONLY: bool = True  # True: UTC 당일 0시 이후만 수집
