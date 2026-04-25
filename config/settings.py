@@ -138,7 +138,7 @@ CHANNEL_WEIGHTS: dict[str, float] = {
 NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
     "S": {
         "fed_rss": {
-            "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+            "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
             "auto_l1": True,
         },
     },
