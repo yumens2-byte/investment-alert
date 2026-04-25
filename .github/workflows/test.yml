@@ -35,7 +35,7 @@ jobs:
 
       # ── 1단계: Lint (GTT팀 공통지침 11 규칙 B) ──────────
       - name: Ruff Check
-        run: ruff check . --line-length=100
+        run: ruff check . --line-length=100 --fix
 
       # ── 2단계: 기능 테스트 ──────────────────────────────
       - name: Pytest
