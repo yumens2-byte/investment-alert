@@ -144,7 +144,7 @@ NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
     },
     "A": {
         "reuters_markets": {
-            "url": "https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best",
+            "url": "https://feeds.reuters.com/reuters/businessNews",
             "auto_l1": False,
         },
         "wsj_markets": {
