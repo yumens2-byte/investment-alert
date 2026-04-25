@@ -44,15 +44,14 @@ def _row(label: str, value: object) -> None:
 # ────────────────────────────────────────────────────────
 # 1. 뉴스 RSS 소스별 점검
 # ────────────────────────────────────────────────────────
-def check_news_rss() -> None:
-    _h("📰 뉴스 RSS 소스 점검")
-
-    sources = {
-        "fed_rss (Tier S)": "https://www.federalreserve.gov/feeds/press_monetary.xml",
-        "reuters_markets (Tier A)": "https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best",
-        "wsj_markets (Tier A)": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-        "yahoo_finance (Tier B)": "https://finance.yahoo.com/news/rssindex",
-    }
+# 변경 후 (settings.py 참조)
+def check_news_rss():
+    _h("2. 뉴스 RSS 소스 점검")
+    from config.settings import NEWS_SOURCE_REGISTRY
+    sources = {}
+    for tier, tier_sources in NEWS_SOURCE_REGISTRY.items():
+        for name, cfg in tier_sources.items():
+            sources[f"{name} (Tier {tier})"] = cfg["url"]
 
     for name, url in sources.items():
         print(f"\n  [{name}]")
