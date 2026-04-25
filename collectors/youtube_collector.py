@@ -55,6 +55,10 @@ YOUTUBE_URGENT_KEYWORDS_KR: dict[str, float] = {
 YOUTUBE_EXCLUSION_PATTERNS: list[str] = [
     "시장 마감",
     "오늘의 시황",
+    "오늘의 요약",    # 일상 요약 브리핑 제외
+    "오늘의 정리",    # 일상 정리 브리핑 제외
+    "[26년",          # 날짜 형식 브리핑 제외 ([26년 04월 xx일)
+    "[25년",          # 날짜 형식 브리핑 제외 ([25년 xx월 xx일)
     "예상",
     "전망",
     "정리",
