@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
       YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -43,12 +44,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Anti-bot random delay (schedule only)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
-        run: |
-          DELAY=$((RANDOM % 200))
-          echo "⏱️ Random delay: ${DELAY}s"
-          sleep $DELAY
+      # - name: Anti-bot random delay (schedule only)
+      #   if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
+      #   run: |
+      #     DELAY=$((RANDOM % 200))
+      #     echo "⏱️ Random delay: ${DELAY}s"
+      #     sleep $DELAY
 
       - name: Create log directory
         run: mkdir -p logs
