@@ -97,14 +97,25 @@ class DataQualityMonitor:
     """
 
     DEFAULT_THRESHOLDS: dict[str, float] = {
-        "source_success_rate_min": 0.50,
-        "fresh_event_ratio_min": 0.10,
+        # B-fix2: 0.50 → 0.75
+        # fresh가 정보성으로 retire되면서 source_success_rate가 주 건강 지표.
+        # 4개 소스 중 1개 실패(0.75)는 통과, 2개 실패(0.50)부터 degraded.
+        "source_success_rate_min": 0.75,
+        # B-fix2: 0.10 → 0.0
+        # fresh는 운영 현실상 평화/휴장/심야엔 0이 정상이므로 정보성 지표로 보관.
+        # 진짜 시스템 건강성은 source_success_rate + lag_seconds_p95 가 측정.
+        "fresh_event_ratio_min": 0.0,
         "volume_zscore_min": -2.0,
         "lag_seconds_p95_max": 90.0,
     }
 
-    # 1시간 이내 이벤트를 fresh로 정의
-    FRESH_WINDOW_SECONDS: int = 3600
+    # B-fix2: NewsValidator.window_hours(24h)와 일치
+    # 1시간은 cron */45 + RSS 갱신 주기보다 짧아 평화 시간대 거짓 DEGRADED 발생.
+    # env DQ_FRESH_WINDOW_SECONDS로 운영 시 동적 조정 가능.
+    DEFAULT_FRESH_WINDOW_SECONDS: int = 24 * 3600
+
+    # 클래스 상수 호환 (기존 코드/테스트 참조용 — 인스턴스에서 self.fresh_window_seconds 사용)
+    FRESH_WINDOW_SECONDS: int = DEFAULT_FRESH_WINDOW_SECONDS
 
     # baseline 미제공 시 zscore 기본값 (degraded 트리거하지 않음)
     NO_BASELINE_ZSCORE: float = 0.0
@@ -121,6 +132,19 @@ class DataQualityMonitor:
         Args:
             thresholds: 임계값 override (env보다 우선 적용)
         """
+        # B-fix2: fresh 윈도우는 env DQ_FRESH_WINDOW_SECONDS로 동적 조정 가능
+        # 기본 24h (NewsValidator.window_hours와 일치)
+        # 운영 시 더 짧게 잡고 싶으면 env로 override (예: 어닝 시즌 6h)
+        try:
+            self.fresh_window_seconds: int = int(
+                os.getenv(
+                    "DQ_FRESH_WINDOW_SECONDS",
+                    self.DEFAULT_FRESH_WINDOW_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            self.fresh_window_seconds = self.DEFAULT_FRESH_WINDOW_SECONDS
+
         env_thresholds = {
             "source_success_rate_min": float(
                 os.getenv(
@@ -150,7 +174,8 @@ class DataQualityMonitor:
         # 명시 thresholds가 env보다 우선
         self.thresholds: dict[str, float] = {**env_thresholds, **(thresholds or {})}
         logger.info(
-            f"[DQMonitor] v{VERSION} 초기화 thresholds={self.thresholds}"
+            f"[DQMonitor] v{VERSION} 초기화 thresholds={self.thresholds} "
+            f"fresh_window={self.fresh_window_seconds}s"
         )
 
     def evaluate(
@@ -253,7 +278,7 @@ class DataQualityMonitor:
         news_events: list[CollectorEvent],
         youtube_events: list[CollectorEvent],
     ) -> float:
-        """전체 이벤트 중 FRESH_WINDOW_SECONDS 이내 발행 이벤트 비율."""
+        """전체 이벤트 중 fresh_window_seconds 이내 발행 이벤트 비율."""
         all_events = list(news_events) + list(youtube_events)
         if not all_events:
             return 0.0
@@ -271,7 +296,8 @@ class DataQualityMonitor:
                 age_seconds = (now - pub).total_seconds()
             except (TypeError, ValueError):
                 continue
-            if 0 <= age_seconds <= self.FRESH_WINDOW_SECONDS:
+            # B-fix2: 인스턴스 변수 self.fresh_window_seconds 사용 (env override 가능)
+            if 0 <= age_seconds <= self.fresh_window_seconds:
                 fresh_count += 1
 
         return fresh_count / len(all_events)
