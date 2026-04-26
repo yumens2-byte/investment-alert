@@ -293,7 +293,17 @@ def test_yt_normalize_datetime_valid() -> None:
 
 @pytest.mark.unit
 def test_yt_is_within_window_naive_datetime() -> None:
-    """timezone-naive datetime도 처리 가능"""
+    """timezone-naive datetime도 처리 가능 (윈도우 안쪽 시각으로 검증).
+
+    참고: 'now - 1시간' 방식은 UTC 자정 직후(00:00~00:59) 실행 시
+    어제 날짜로 떨어져 today_only 윈도우 밖이 됨. 이를 회피하기 위해
+    오늘 자정 + 1초의 naive 표현을 사용하여 timezone 처리만 검증한다.
+    """
+    from datetime import UTC as _UTC
     collector = YouTubeCollector(channels_str="")
-    naive_dt = datetime.utcnow() - timedelta(hours=1)  # naive
+    today_start_utc = datetime.now(_UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    # tzinfo 제거 → 코드가 UTC로 가정 변환해도 윈도우 안쪽
+    naive_dt = (today_start_utc + timedelta(seconds=1)).replace(tzinfo=None)
     assert collector._is_within_window(naive_dt) is True
