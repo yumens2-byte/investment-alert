@@ -82,25 +82,37 @@ def test_all_sources_ok_returns_not_degraded() -> None:
     assert state.fresh_event_ratio == 1.0
 
 
-def test_half_sources_fail_returns_degraded() -> None:
-    """2. 소스 절반 실패 (success=0.5) → 임계 0.5 *미달이 아님*이지만,
-       조건은 < 이므로 0.5는 통과. 0.49 미만에서만 degraded.
-       이 테스트는 0.5(통과) 검증 + 0.49(실패) 검증 동시 수행."""
+def test_threshold_boundary_source_success_rate() -> None:
+    """2. 소스 success_rate 임계(0.75) 경계값 동작.
+       조건은 < 이므로 0.75 정확값은 통과. 0.50 (절반 실패)부터 degraded.
+       (B-fix2: 임계 0.50 → 0.75로 강화. fresh가 정보성 지표화되어 source가 주 건강 지표)"""
     monitor = DataQualityMonitor()
     start, end = _cycle_window()
 
-    # 0.5 정확히 → 임계 미만 아니므로 success_rate 사유 없음
+    # 0.75 정확히 → 임계 미만 아니므로 source_success_rate 사유 없음
     state_at_threshold = monitor.evaluate(
         cycle_started_at=start,
         cycle_finished_at=end,
-        source_results={"a": True, "b": True, "c": False, "d": False},
+        source_results={"a": True, "b": True, "c": True, "d": False},  # 0.75
         news_events=[_make_event(age_seconds=600, title_suffix="x")],
         youtube_events=[],
     )
-    assert state_at_threshold.source_success_rate == 0.5
+    assert state_at_threshold.source_success_rate == 0.75
     assert not any(
         "source_success_rate" in r for r in state_at_threshold.degraded_reasons
     )
+
+    # 0.50 (절반 실패) → 임계 0.75 미만 → degraded
+    state_below = monitor.evaluate(
+        cycle_started_at=start,
+        cycle_finished_at=end,
+        source_results={"a": True, "b": True, "c": False, "d": False},  # 0.50
+        news_events=[_make_event(age_seconds=600, title_suffix="x")],
+        youtube_events=[],
+    )
+    assert state_below.source_success_rate == 0.50
+    assert state_below.degraded_flag is True
+    assert any("source_success_rate" in r for r in state_below.degraded_reasons)
 
 
 def test_majority_sources_fail_returns_degraded() -> None:
@@ -119,23 +131,29 @@ def test_majority_sources_fail_returns_degraded() -> None:
     assert any("source_success_rate" in r for r in state.degraded_reasons)
 
 
-def test_no_fresh_events_returns_degraded() -> None:
-    """4. 모든 이벤트가 1시간 초과 (fresh=0%) → degraded=True"""
+def test_old_events_alone_do_not_trigger_degraded() -> None:
+    """4. fresh window 밖 이벤트만 있어도 source가 정상이면 degraded 아님.
+       (B-fix2: fresh는 정보성 지표화. 평화/휴장 시간대 거짓 경보 방지)
+       fresh window는 기본 24h이므로 24h 초과 발행만 'old'로 처리."""
     monitor = DataQualityMonitor()
     start, end = _cycle_window()
+    # 25시간 전 (24h fresh window 밖)
     state = monitor.evaluate(
         cycle_started_at=start,
         cycle_finished_at=end,
-        source_results={"a": True, "b": True},
+        source_results={"a": True, "b": True, "c": True, "d": True},
         news_events=[
-            _make_event(age_seconds=7200, title_suffix="old1"),  # 2시간 전
-            _make_event(age_seconds=7200, title_suffix="old2"),
+            _make_event(age_seconds=25 * 3600, title_suffix="old1"),
+            _make_event(age_seconds=25 * 3600, title_suffix="old2"),
         ],
         youtube_events=[],
     )
-    assert state.degraded_flag is True
+    # source 100% 정상 + fresh=0 → degraded=False (B-fix2)
+    assert state.degraded_flag is False
     assert state.fresh_event_ratio == 0.0
-    assert any("fresh_event_ratio" in r for r in state.degraded_reasons)
+    assert state.source_success_rate == 1.0
+    # fresh_event_ratio 사유는 발생하지 않아야 함 (임계 0.0)
+    assert not any("fresh_event_ratio" in r for r in state.degraded_reasons)
 
 
 def test_lag_exceeds_threshold_returns_degraded() -> None:
@@ -194,7 +212,8 @@ def test_threshold_override_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_empty_events_safely_handled() -> None:
-    """8. events=[] + 모든 소스 실패 시 예외 없이 degraded=True 반환"""
+    """8. events=[] + 모든 소스 실패 시 예외 없이 degraded=True 반환.
+       (B-fix2: fresh는 정보성 지표화. source 실패만 degraded 사유)"""
     monitor = DataQualityMonitor()
     start, end = _cycle_window()
     state = monitor.evaluate(
@@ -207,9 +226,10 @@ def test_empty_events_safely_handled() -> None:
     assert state.degraded_flag is True
     assert state.fresh_event_ratio == 0.0
     assert state.source_success_rate == 0.0
-    # 두 가지 사유 동시 기록 확인
-    assert any("fresh_event_ratio" in r for r in state.degraded_reasons)
+    # source_success_rate가 핵심 사유 (fresh는 정보성이라 사유 미기록)
     assert any("source_success_rate" in r for r in state.degraded_reasons)
+    # fresh_event_ratio는 임계 0.0이라 사유로 안 잡힘
+    assert not any("fresh_event_ratio" in r for r in state.degraded_reasons)
 
 
 def test_to_dict_json_serializable() -> None:
@@ -236,9 +256,10 @@ def test_to_dict_json_serializable() -> None:
 
 
 def test_multiple_reasons_all_recorded() -> None:
-    """10. 여러 임계 동시 위반 시 모든 사유가 degraded_reasons에 포함된다"""
+    """10. 여러 임계 동시 위반 시 모든 사유가 degraded_reasons에 포함된다.
+       (B-fix2: fresh는 정보성. success_rate + lag 두 사유 동시 위반 검증)"""
     monitor = DataQualityMonitor()
-    # 95초 lag + 모든 소스 실패 + fresh 0
+    # 95초 lag + 모든 소스 실패
     start = datetime.now(UTC) - timedelta(seconds=95)
     end = datetime.now(UTC)
     state = monitor.evaluate(
@@ -249,9 +270,10 @@ def test_multiple_reasons_all_recorded() -> None:
         youtube_events=[],
     )
     assert state.degraded_flag is True
-    # 3개 사유 동시 발생 (success_rate, fresh_ratio, lag)
-    assert len(state.degraded_reasons) >= 3
+    # 2개 사유 동시 발생 (success_rate, lag) — fresh는 정보성이라 사유에 없음
+    assert len(state.degraded_reasons) >= 2
     joined = " | ".join(state.degraded_reasons)
     assert "source_success_rate" in joined
-    assert "fresh_event_ratio" in joined
     assert "lag_seconds_p95" in joined
+    # fresh는 정보성이라 사유로 잡히지 않음
+    assert "fresh_event_ratio" not in joined

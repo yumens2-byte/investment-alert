@@ -131,3 +131,70 @@ def test_bfix_dq_uses_raw_events_not_filtered_events() -> None:
     assert result.dq_state.degraded_flag is False
     # 한편 result.news_events는 collect() 반환을 사용 → 0건
     assert len(result.news_events) == 0
+
+
+# ── B-fix2 추가 테스트 (2026-04-26) ─────────────────────────────────
+
+
+def test_bfix2_old_news_with_healthy_source_is_not_degraded() -> None:
+    """B-fix2: validator 통과한 RSS의 발행 시각이 1시간 이상 과거여도
+    source 정상이면 degraded=False. 운영 첫 가동에서 발견된 시나리오 회귀 보호.
+
+    실제 운영 시나리오:
+      - validator window=24h → 1.7~12.4시간 전 RSS 통과
+      - 이전 동작 (B-fix2 전): fresh_window 1h → fresh=0 → 거짓 DEGRADED
+      - B-fix2 후: fresh_window 24h → fresh=1.0 → 정상
+    """
+    # 1.7시간 전, 12.4시간 전 (운영 로그 실측 시각)
+    raw_news = [
+        _make_event("yahoo_old", age_minutes=int(1.7 * 60)),
+        _make_event("reuters_old", age_minutes=int(12.4 * 60)),
+    ]
+
+    news_mock = MagicMock()
+    news_mock.collect.return_value = []
+    news_mock.last_raw_events = raw_news
+
+    yt_mock = MagicMock()
+    yt_mock.collect.return_value = []
+    yt_mock.last_raw_events = []
+
+    layer = MacroNewsLayer(news_collector=news_mock, youtube_collector=yt_mock)
+    result = layer.detect()
+
+    # 핵심: 24h fresh window 안이므로 fresh_ratio=1.0 → degraded=False
+    assert result.dq_state is not None
+    assert result.dq_state.degraded_flag is False
+    assert result.dq_state.fresh_event_ratio == 1.0
+    assert result.level != "SYSTEM_DEGRADED"
+
+
+def test_bfix2_fresh_window_env_override(monkeypatch) -> None:
+    """B-fix2: DQ_FRESH_WINDOW_SECONDS env로 윈도우 동적 조정 가능"""
+    from detection.dq_monitor import DataQualityMonitor
+
+    # env로 6시간으로 단축
+    monkeypatch.setenv("DQ_FRESH_WINDOW_SECONDS", str(6 * 3600))
+    monitor = DataQualityMonitor()
+    assert monitor.fresh_window_seconds == 6 * 3600
+
+    # env 미설정 시 기본 24h
+    monkeypatch.delenv("DQ_FRESH_WINDOW_SECONDS", raising=False)
+    monitor2 = DataQualityMonitor()
+    assert monitor2.fresh_window_seconds == 24 * 3600
+
+
+def test_bfix2_fresh_ratio_min_default_is_zero() -> None:
+    """B-fix2: fresh_event_ratio_min 기본값은 0.0 (정보성 지표)"""
+    from detection.dq_monitor import DataQualityMonitor
+
+    monitor = DataQualityMonitor()
+    assert monitor.thresholds["fresh_event_ratio_min"] == 0.0
+
+
+def test_bfix2_source_success_threshold_default_is_strengthened() -> None:
+    """B-fix2: source_success_rate_min 기본값 0.50 → 0.75로 강화"""
+    from detection.dq_monitor import DataQualityMonitor
+
+    monitor = DataQualityMonitor()
+    assert monitor.thresholds["source_success_rate_min"] == 0.75
