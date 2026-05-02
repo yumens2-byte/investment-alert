@@ -158,7 +158,7 @@ class HashtagBuilder:
 
         # 4. 시그널 상황 태그
         if signals:
-            for sig_key, cfg in _SIGNAL_TAGS.items():
+            for _sig_key, cfg in _SIGNAL_TAGS.items():
                 try:
                     if cfg["condition"](signals):
                         tags.extend(cfg["tags"])
