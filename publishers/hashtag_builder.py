@@ -165,6 +165,7 @@ class HashtagBuilder:
                 except Exception:
                     continue
 
+      
         # 5. 세션별 태그
         session_tags = _SESSION_TAGS.get(session, [])
         tags.extend(session_tags)
