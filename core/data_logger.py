@@ -167,10 +167,29 @@ class DataLogger:
         logger.info("")
         logger.info("  ▶ 판정 레벨  : %s", result.level)
         logger.info("  ▶ 판정 근거  : %s", result.reasoning[:120])
-        # 운영 경고는 본문 가독성을 위해 최대 2건까지만 노출한다.
-        # (전체 원본은 result.ops_warnings에 보존되어 다른 sink에서 전량 사용 가능)
-        if getattr(result, "ops_warnings", None):
-            logger.info("  ▶ 운영 경고  : %s", " | ".join(result.ops_warnings[:2]))
+        # 운영 경고 출력은 헬퍼 함수로 위임해 충돌 지점을 최소화한다.
+        warnings_line = self._format_ops_warnings(result, limit=2)
+        if warnings_line:
+            logger.info("  ▶ 운영 경고  : %s", warnings_line)
+
+
+    def _format_ops_warnings(self, result: MacroNewsResult, limit: int = 2) -> str | None:
+        """
+        제목: 운영 경고 문자열 포맷터
+        내용: 병합 충돌을 줄이기 위해 경고 렌더링 로직을 한 곳으로 모읍니다.
+              경고가 없으면 None을 반환하고, 있으면 상위 limit건을 ` | `로 결합합니다.
+
+        Args:
+            result: MacroNewsResult
+            limit: 로그 출력 최대 개수
+
+        Returns:
+            str | None: 포맷된 경고 문자열
+        """
+        warnings = getattr(result, "ops_warnings", None)
+        if not warnings:
+            return None
+        return " | ".join(warnings[:limit])
 
     def log_alert_signal(self, signal: AlertSignal) -> None:
         """
