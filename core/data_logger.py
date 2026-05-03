@@ -167,6 +167,10 @@ class DataLogger:
         logger.info("")
         logger.info("  ▶ 판정 레벨  : %s", result.level)
         logger.info("  ▶ 판정 근거  : %s", result.reasoning[:120])
+        # 운영 경고는 본문 가독성을 위해 최대 2건까지만 노출한다.
+        # (전체 원본은 result.ops_warnings에 보존되어 다른 sink에서 전량 사용 가능)
+        if getattr(result, "ops_warnings", None):
+            logger.info("  ▶ 운영 경고  : %s", " | ".join(result.ops_warnings[:2]))
 
     def log_alert_signal(self, signal: AlertSignal) -> None:
         """

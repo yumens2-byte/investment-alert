@@ -77,6 +77,11 @@ class MacroNewsResult:
     reasoning_json: dict = field(default_factory=dict)  # FR-05 표준화 reasoning (JSONB)
     policy_version: str = "v1.0.0"  # 적용된 정책 버전 (semver)
     dq_state: DataQualityState | None = None  # FR-03 데이터 품질 평가 결과
+    # 제목: 운영 경고 버킷
+    # 내용: Alert 레벨(발행 정책)에 직접 영향 주지 않는 관측성 신호를 누적 보관.
+    #       예) 수집은 정상이나 키워드 필터로 전량 탈락한 희소 상태(event_scarcity).
+    #       런타임 로그/대시보드/운영 채널 전송기의 입력으로 사용한다.
+    ops_warnings: list[str] = field(default_factory=list)
 
 
 # ────────────────────────────────────────────────────────
@@ -192,6 +197,24 @@ class MacroNewsLayer:
         # collect()의 결과(news_events)는 이미 키워드 필터 후 → DQ 입력으로 부적합
         raw_news_events = list(getattr(self.news_collector, "last_raw_events", []) or [])
         raw_youtube_events = list(getattr(self.youtube_collector, "last_raw_events", []) or [])
+        # Step 2.6: Event Scarcity Guard (사전 고도화 1차 적용)
+        # 목적: 수집(raw)은 있으나 키워드 필터 후 이벤트가 0건인 상태를 운영 경고로 표면화.
+        # 주의: 본 경고는 발행 레벨을 강제 승격/강등하지 않고, 운영 관측용으로만 사용.
+        ops_warnings: list[str] = []
+        # 판정식 설명:
+        #  - 좌변(raw 합계)>0: HTTP/RSS 수집 자체는 실패하지 않았음을 의미
+        #  - 우변(filtered 합계)==0: 정책 키워드 기준으로는 유효 이벤트가 0건
+        #  => 장애 알림이 아닌 운영 경고로 분류하여 관측성만 강화한다.
+        if (len(raw_news_events) + len(raw_youtube_events)) > 0 and (len(news_events) + len(youtube_events)) == 0:
+            # warning 문자열은 후속 파서(로그 검색/알림 라우터)에서 안정적으로
+            # 식별할 수 있도록 prefix(event_scarcity) + key=value 포맷을 유지한다.
+            warning = (
+                "event_scarcity: raw_events_present_but_all_filtered "
+                f"(raw_news={len(raw_news_events)}, raw_yt={len(raw_youtube_events)}, "
+                f"filtered_news={len(news_events)}, filtered_yt={len(youtube_events)})"
+            )
+            ops_warnings.append(warning)
+            logger.warning(f"[MacroNewsLayer] 운영 경고 — {warning}")
         try:
             dq_state = self.dq_monitor.evaluate(
                 cycle_started_at=cycle_started_at,
@@ -278,6 +301,7 @@ class MacroNewsLayer:
             reasoning_json=reasoning_json,
             policy_version=self.policy_version,
             dq_state=dq_state,
+            ops_warnings=ops_warnings,
         )
 
     def _compute_news_score(self, events: list[CollectorEvent]) -> float:
