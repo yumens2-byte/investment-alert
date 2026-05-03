@@ -109,3 +109,25 @@ def test_youtube_channel_failure_ops_warning_is_emitted() -> None:
     result = layer.detect()
 
     assert any(w.startswith("youtube_channel_failures:") for w in result.ops_warnings)
+
+
+def test_youtube_failures_do_not_block_news_alert_level() -> None:
+    # 뉴스가 auto_l1 조건을 충족하면 YouTube 실패가 있어도 발행 레벨은 유지되어야 함
+    event = _make_event("tier_s_auto")
+    event.auto_l1 = True
+    event.tier = "S"
+
+    news_mock = MagicMock()
+    news_mock.collect.return_value = [event]
+    news_mock.last_raw_events = [event]
+
+    yt_mock = MagicMock()
+    yt_mock.collect.return_value = []
+    yt_mock.last_raw_events = []
+    yt_mock.last_failed_channels = ["채널A", "채널B"]
+
+    layer = MacroNewsLayer(news_collector=news_mock, youtube_collector=yt_mock)
+    result = layer.detect()
+
+    assert result.level == "L1"
+    assert any(w.startswith("youtube_channel_failures:") for w in result.ops_warnings)
