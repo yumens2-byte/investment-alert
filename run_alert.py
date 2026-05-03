@@ -25,6 +25,29 @@ from publishers.x_publisher import XPublisher
 VERSION = "1.0.0"
 
 
+def _log_preflight_warnings() -> None:
+    """
+    제목: 운영 전 사전 점검 경고 로그
+    내용: alert 미발행의 흔한 원인(환경변수 누락/DRY_RUN)을 시작 시점에
+          명시적으로 기록하여 운영자가 빠르게 원인을 파악하도록 돕습니다.
+    """
+    import os
+
+    from config.settings import get_env_bool
+
+    logger = get_logger(__name__)
+
+    dry_run = get_env_bool("DRY_RUN", True)
+    if dry_run:
+        logger.warning("[run_alert] DRY_RUN=true — 실제 외부 채널 발행은 수행되지 않습니다.")
+
+    if not os.getenv("YOUTUBE_CHANNELS", "").strip():
+        logger.warning("[run_alert] YOUTUBE_CHANNELS 미설정 — YouTube 감지 레이어가 비활성화됩니다.")
+
+    if not os.getenv("SUPABASE_URL", "").strip() or not os.getenv("SUPABASE_KEY", "").strip():
+        logger.warning("[run_alert] SUPABASE 설정 미완료 — 쿨다운/감사로그 저장이 동작하지 않을 수 있습니다.")
+
+
 def main() -> None:
     """
     제목: investment-alert 파이프라인 메인
@@ -49,6 +72,7 @@ def main() -> None:
     configure_root_logger(log_file=_log_file)
     logger = get_logger(__name__)
     logger.info(f"[run_alert] v{VERSION} 시작 - 로그파일: {_log_file}")
+    _log_preflight_warnings()
 
     # ── Step 1: 의존성 초기화 ────────────────────────────────
     alert_store = AlertStore()
