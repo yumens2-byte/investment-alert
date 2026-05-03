@@ -163,6 +163,14 @@ class YouTubeCollector(BaseCollector):
         # Step 2: 키워드 필터
         filtered = self._filter_by_keywords(raw_events)
         logger.info(f"[YouTubeCollector] 키워드 필터 후: {len(filtered)}건")
+        if raw_events and not filtered:
+            filter_stats = self._summarize_filter_reasons(raw_events)
+            logger.warning(
+                "[YouTubeCollector] 운영 참고 — raw는 존재하나 전부 필터됨: "
+                f"excluded={filter_stats['excluded_count']}, "
+                f"below_threshold={filter_stats['below_threshold_count']}, "
+                f"threshold={KEYWORD_THRESHOLD}"
+            )
 
         # Step 3: weighted_score 내림차순 정렬
         filtered.sort(key=lambda e: e.keyword_score * e.channel_weight, reverse=True)
@@ -308,6 +316,23 @@ class YouTubeCollector(BaseCollector):
                 filtered.append(event)
 
         return filtered
+
+    def _summarize_filter_reasons(self, events: list[CollectorEvent]) -> dict[str, int]:
+        """키워드 필터 결과가 0건일 때 운영 경고용 카운트를 산출."""
+        excluded_count = 0
+        below_threshold_count = 0
+        for event in events:
+            combined = f"{event.title} {event.summary}"
+            if self._has_exclusion_pattern(combined):
+                excluded_count += 1
+                continue
+            score, _matched = self._match_keywords_kr(combined)
+            if score < KEYWORD_THRESHOLD:
+                below_threshold_count += 1
+        return {
+            "excluded_count": excluded_count,
+            "below_threshold_count": below_threshold_count,
+        }
 
     def _match_keywords_kr(self, text: str) -> tuple[float, list[str]]:
         """
