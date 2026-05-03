@@ -91,3 +91,4 @@ def test_event_scarcity_warn_on_intraday(monkeypatch) -> None:
     result = layer.detect()
 
     assert "event_scarcity[warn]" in result.ops_warnings[0]
+
