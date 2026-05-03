@@ -358,3 +358,25 @@ def test_collect_channel_rss_fail_then_api_fallback_returns_events(mocker) -> No
 
     assert len(events) == 1
     assert events[0].url.endswith("vid1")
+
+
+def test_collect_channel_retry_then_api_fallback_call_count(mocker) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    collector.youtube_api_key = "test-key"
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    retry_mock = mocker.patch.object(collector, "_retry_request", side_effect=RuntimeError("err"))
+
+    class Resp:
+        status_code = 200
+        def json(self):
+            return {"items": []}
+    api_mock = mocker.patch("collectors.youtube_collector.requests.get", return_value=Resp())
+
+    collector._collect_channel(channel)
+
+    # _retry_request 내부에서 3회 재시도 후 예외를 발생시키고, 이후 API fallback 1회 수행
+    assert retry_mock.call_count == 1
+    assert api_mock.call_count == 1
