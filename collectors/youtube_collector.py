@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import feedparser
+import requests
 
 from collectors.base import BaseCollector, CollectorEvent
 from config.settings import CHANNEL_WEIGHTS, YOUTUBE_TODAY_ONLY, YOUTUBE_WINDOW_HOURS
@@ -116,6 +117,8 @@ class YouTubeCollector(BaseCollector):
 
         # 운영 관측성: 채널별 수집 실패 목록(run 단위)
         self.last_failed_channels: list[str] = []
+        # RSS 실패 시 2차 대체 수집용 YouTube Data API Key
+        self.youtube_api_key: str = os.getenv("YOUTUBE_API_KEY", "").strip()
 
         mode = "당일(UTC)" if today_only else f"{window_hours}h"
         logger.info(
@@ -169,7 +172,7 @@ class YouTubeCollector(BaseCollector):
     def _collect_channel(self, channel: dict[str, Any]) -> list[CollectorEvent]:
         """
         제목: 단일 채널 RSS 수집
-        내용: YouTube RSS XML을 파싱하여 48시간 이내 영상을 CollectorEvent로 변환합니다.
+        내용: 1차 RSS, 실패 시 2차 YouTube Data API v3로 대체 수집합니다.
 
         Args:
             channel: {'name': str, 'id': str, 'weight': float}
@@ -193,42 +196,30 @@ class YouTubeCollector(BaseCollector):
                 self.last_failed_channels.append(channel_name)
                 logger.warning(
                     f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}, url={rss_url}"
+                )
+                return self._collect_channel_via_api(channel_name, channel_id, channel_weight)
                     f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}"
                 )
                 return events
             entries = getattr(feed, "entries", [])
 
+            entries = getattr(feed, "entries", [])
             for entry in entries:
                 published_at = self._parse_entry_date(entry)
-
-                # 제목: 48시간 이내 필터링
                 if not self._is_within_window(published_at):
                     continue
-
                 video_id = entry.get("yt_videoid", "")
                 title = entry.get("title", "").strip()
                 description = entry.get("summary", "")[:500]
                 url = f"https://www.youtube.com/watch?v={video_id}"
-
                 if not title or not video_id:
                     continue
-
                 event_id = CollectorEvent.compute_event_id(channel_name, url, title)
-
-                event = CollectorEvent(
-                    source_type="youtube",
-                    source_name=channel_name,
-                    event_id=event_id,
-                    title=title,
-                    summary=description,
-                    url=url,
-                    published_at=published_at,
-                    tier=None,  # YouTube는 Tier 없음
-                    channel_weight=channel_weight,
-                    auto_l1=False,  # YouTube는 auto_l1 불가 (설계 원칙)
-                )
-
-                events.append(event)
+                events.append(CollectorEvent(
+                    source_type="youtube", source_name=channel_name, event_id=event_id,
+                    title=title, summary=description, url=url, published_at=published_at,
+                    tier=None, channel_weight=channel_weight, auto_l1=False,
+                ))
 
         except Exception as e:
             # 방어코드: 구버전 객체/테스트 더블에서도 AttributeError 없이 동작
@@ -236,11 +227,60 @@ class YouTubeCollector(BaseCollector):
                 self.last_failed_channels = []
             self.last_failed_channels.append(channel_name)
             logger.warning(
+                f"[YouTubeCollector] {channel_name} 수집 실패: {type(e).__name__}: {e}, url={rss_url}"
                 f"[YouTubeCollector] {channel_name} 수집 실패: "
                 f"{type(e).__name__}: {e}, url={rss_url}"
             )
+            return self._collect_channel_via_api(channel_name, channel_id, channel_weight)
 
         return events
+
+    def _collect_channel_via_api(self, channel_name: str, channel_id: str, channel_weight: float) -> list[CollectorEvent]:
+        """RSS 실패 시 YouTube Data API v3 search endpoint로 대체 수집."""
+        if not self.youtube_api_key:
+            logger.warning(f"[YouTubeCollector] {channel_name} API 대체 수집 스킵: YOUTUBE_API_KEY 미설정")
+            return []
+        url = (
+            "https://www.googleapis.com/youtube/v3/search"
+            f"?channelId={channel_id}&type=video&order=date&maxResults=10&key={self.youtube_api_key}"
+        )
+        try:
+            resp = requests.get(url, timeout=self.timeout)
+            if resp.status_code >= 400:
+                logger.warning(f"[YouTubeCollector] {channel_name} API HTTP 비정상: status={resp.status_code}, url={url}")
+                return []
+            data = resp.json()
+            items = data.get("items", [])
+            events: list[CollectorEvent] = []
+            for item in items:
+                vid = (((item.get("id") or {}).get("videoId")) or "").strip()
+                sn = item.get("snippet") or {}
+                title = (sn.get("title") or "").strip()
+                if not vid or not title:
+                    continue
+                published_raw = str(sn.get("publishedAt") or "")
+                # API publishedAt는 ISO8601 문자열이므로 datetime으로 변환해 window 검증
+                try:
+                    published_at = datetime.fromisoformat(published_raw.replace("Z", "+00:00"))
+                except Exception:
+                    published_at = datetime.now(UTC)
+                if published_at.tzinfo is None:
+                    published_at = published_at.replace(tzinfo=UTC)
+                if not self._is_within_window(published_at):
+                    continue
+                vurl = f"https://www.youtube.com/watch?v={vid}"
+                event_id = CollectorEvent.compute_event_id(channel_name, vurl, title)
+                events.append(CollectorEvent(
+                    source_type="youtube", source_name=channel_name, event_id=event_id,
+                    title=title, summary=(sn.get("description") or "")[:500],
+                    url=vurl, published_at=published_at, tier=None,
+                    channel_weight=channel_weight, auto_l1=False,
+                ))
+            logger.info(f"[YouTubeCollector] {channel_name} API 대체 수집 성공: {len(events)}건")
+            return events
+        except Exception as e:
+            logger.warning(f"[YouTubeCollector] {channel_name} API 대체 수집 실패: {type(e).__name__}: {e}, url={url}")
+            return []
 
     def _filter_by_keywords(self, events: list[CollectorEvent]) -> list[CollectorEvent]:
         """

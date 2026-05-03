@@ -336,3 +336,25 @@ def test_collect_channel_http_status_404_log_includes_rss_url(mocker, caplog) ->
     collector._collect_channel(channel)
 
     assert "url=https://www.youtube.com/feeds/videos.xml?channel_id=UC123" in caplog.text
+
+
+def test_collect_channel_rss_fail_then_api_fallback_returns_events(mocker) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    collector.youtube_api_key = "test-key"
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    feed = type("Feed", (), {"status": 404, "entries": []})()
+    mocker.patch.object(collector, "_retry_request", return_value=feed)
+
+    class Resp:
+        status_code = 200
+        def json(self):
+            return {"items": [{"id": {"videoId": "vid1"}, "snippet": {"title": "긴급 속보", "description": "d", "publishedAt": "2026-05-03T00:10:00Z"}}]}
+    mocker.patch("collectors.youtube_collector.requests.get", return_value=Resp())
+
+    events = collector._collect_channel(channel)
+
+    assert len(events) == 1
+    assert events[0].url.endswith("vid1")
