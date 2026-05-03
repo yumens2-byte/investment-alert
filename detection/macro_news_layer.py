@@ -215,12 +215,14 @@ class MacroNewsLayer:
         #  - 우변(filtered 합계)==0: 정책 키워드 기준으로는 유효 이벤트가 0건
         #  => 장애 알림이 아닌 운영 경고로 분류하여 관측성만 강화한다.
         if (len(raw_news_events) + len(raw_youtube_events)) > 0 and (len(news_events) + len(youtube_events)) == 0:
+
             # 휴장일 + 저신호 구간(소량 raw, 유튜브 raw 없음)은 예상 가능한 패턴으로 간주해
             # 경고를 완전히 제거하지 않고 severity=info로 낮춰 운영 피로도를 줄인다.
             is_holiday_low_signal = (
                 market_profile == "holiday"
                 and len(raw_news_events) <= HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX
                 and len(raw_youtube_events) <= HOLIDAY_LOW_SIGNAL_RAW_YT_MAX
+                and len(raw_youtube_events) == 0
             )
             severity = "info" if is_holiday_low_signal else "warn"
 
@@ -246,6 +248,7 @@ class MacroNewsLayer:
             )
             ops_warnings.append(channel_warning)
             logger.warning(f"[MacroNewsLayer] 운영 경고 — {channel_warning}")
+
         try:
             dq_state = self.dq_monitor.evaluate(
                 cycle_started_at=cycle_started_at,
