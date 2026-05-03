@@ -147,8 +147,8 @@ NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
               "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
               "auto_l1": False,
           },
-          "reuters_breaking": {          # wsj_markets 교체 — RSS 16개월 정지 확인 (2026-05-03)
-              "url": "https://feeds.reuters.com/reuters/businessNews",
+          "ap_business": {          # reuters_breaking 교체 — Reuters RSS 폐쇄 (2026-05-03)
+              "url": "https://feeds.apnews.com/apf-business",
               "auto_l1": False,
           },
       },
