@@ -102,6 +102,7 @@ L1_MIN_SOURCE_COUNT: int = 2
 # 내용: 주말/휴장일에는 매크로 긴급 뉴스가 적은 것이 일반적이므로
 #       raw 이벤트가 소량일 때는 경고 강도를 낮춰 노이즈를 줄인다.
 HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX: int = 4
+HOLIDAY_LOW_SIGNAL_RAW_YT_MAX: int = 1
 
 
 class MacroNewsLayer:
@@ -220,6 +221,7 @@ class MacroNewsLayer:
             is_holiday_low_signal = (
                 market_profile == "holiday"
                 and len(raw_news_events) <= HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX
+                and len(raw_youtube_events) <= HOLIDAY_LOW_SIGNAL_RAW_YT_MAX
                 and len(raw_youtube_events) == 0
             )
             severity = "info" if is_holiday_low_signal else "warn"
