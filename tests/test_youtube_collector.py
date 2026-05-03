@@ -118,6 +118,15 @@ def test_parse_channels_empty_string() -> None:
     assert c.channels == []
 
 
+@pytest.mark.unit
+def test_parse_channels_with_env_key_prefix() -> None:
+    """환경변수가 'YOUTUBE_CHANNELS=...' 형태여도 정상 파싱"""
+    raw = "YOUTUBE_CHANNELS=소수몽키:UCxxx,전인구경제연구소:UCyyy"
+    c = YouTubeCollector(channels_str=raw)
+    names = [ch["name"] for ch in c.channels]
+    assert names == ["소수몽키", "전인구경제연구소"]
+
+
 # ────────────────────────────────────────────────────────
 # 한글 키워드 매칭
 # ────────────────────────────────────────────────────────
