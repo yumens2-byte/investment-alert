@@ -111,6 +111,7 @@ class YouTubeCollector(BaseCollector):
         super().__init__(source_name="youtube_collector", timeout=10, max_retries=2)
 
         raw = channels_str if channels_str is not None else os.getenv("YOUTUBE_CHANNELS", "")
+        raw = self._normalize_channels_str(raw)
         self.channels: list[dict[str, Any]] = self._parse_channels(raw)
         self.window_hours = window_hours
         self.today_only = today_only
@@ -198,11 +199,6 @@ class YouTubeCollector(BaseCollector):
                     f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}, url={rss_url}"
                 )
                 return self._collect_channel_via_api(channel_name, channel_id, channel_weight)
-                    f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}"
-                )
-                return events
-            entries = getattr(feed, "entries", [])
-
             entries = getattr(feed, "entries", [])
             for entry in entries:
                 published_at = self._parse_entry_date(entry)
@@ -227,7 +223,6 @@ class YouTubeCollector(BaseCollector):
                 self.last_failed_channels = []
             self.last_failed_channels.append(channel_name)
             logger.warning(
-                f"[YouTubeCollector] {channel_name} 수집 실패: {type(e).__name__}: {e}, url={rss_url}"
                 f"[YouTubeCollector] {channel_name} 수집 실패: "
                 f"{type(e).__name__}: {e}, url={rss_url}"
             )
@@ -391,6 +386,19 @@ class YouTubeCollector(BaseCollector):
             channels.append({"name": name, "id": channel_id, "weight": weight})
 
         return channels
+
+    @staticmethod
+    def _normalize_channels_str(channels_str: str) -> str:
+        """
+        제목: 채널 문자열 정규화
+        내용: 운영 환경에서 실수로 "YOUTUBE_CHANNELS=..." 형태가 들어오는 경우를
+              자동으로 보정합니다.
+        """
+        value = (channels_str or "").strip()
+        prefix = "YOUTUBE_CHANNELS="
+        if value.startswith(prefix):
+            return value[len(prefix):].strip()
+        return value
 
     def _parse_entry_date(self, entry: Any) -> datetime:
         """
