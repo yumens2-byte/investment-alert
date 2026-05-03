@@ -98,6 +98,11 @@ YOUTUBE_SOLO_L2_MIN_SCORE: float = 6.0
 # 제목: 최소 소스 수 (L1 복수소스 조건)
 L1_MIN_SOURCE_COUNT: int = 2
 
+# 제목: 휴장일 저신호 완화 기준
+# 내용: 주말/휴장일에는 매크로 긴급 뉴스가 적은 것이 일반적이므로
+#       raw 이벤트가 소량일 때는 경고 강도를 낮춰 노이즈를 줄인다.
+HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX: int = 4
+
 
 class MacroNewsLayer:
     """
@@ -191,6 +196,9 @@ class MacroNewsLayer:
             logger.error(f"[MacroNewsLayer] YouTube 수집 실패 (계속 진행): {type(e).__name__}: {e}")
             source_results["youtube_collector"] = False
 
+        # Step 2.4: 시장 프로파일 사전 계산 (경고 강도/임계값 공통 사용)
+        market_profile = get_market_profile()
+
         # Step 2.5 (신규): 데이터 품질 평가 (DQ Monitor)
         cycle_finished_at = datetime.now(UTC)
         # B-fix: 키워드 필터 *전*의 raw events를 DQ에 전달 (수집 시스템 건강성 측정용)
@@ -206,15 +214,29 @@ class MacroNewsLayer:
         #  - 우변(filtered 합계)==0: 정책 키워드 기준으로는 유효 이벤트가 0건
         #  => 장애 알림이 아닌 운영 경고로 분류하여 관측성만 강화한다.
         if (len(raw_news_events) + len(raw_youtube_events)) > 0 and (len(news_events) + len(youtube_events)) == 0:
+
+            # 휴장일 + 저신호 구간(소량 raw, 유튜브 raw 없음)은 예상 가능한 패턴으로 간주해
+            # 경고를 완전히 제거하지 않고 severity=info로 낮춰 운영 피로도를 줄인다.
+            is_holiday_low_signal = (
+                market_profile == "holiday"
+                and len(raw_news_events) <= HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX
+                and len(raw_youtube_events) == 0
+            )
+            severity = "info" if is_holiday_low_signal else "warn"
+
             # warning 문자열은 후속 파서(로그 검색/알림 라우터)에서 안정적으로
             # 식별할 수 있도록 prefix(event_scarcity) + key=value 포맷을 유지한다.
             warning = (
-                "event_scarcity: raw_events_present_but_all_filtered "
-                f"(raw_news={len(raw_news_events)}, raw_yt={len(raw_youtube_events)}, "
+                f"event_scarcity[{severity}]: raw_events_present_but_all_filtered "
+                f"(profile={market_profile}, raw_news={len(raw_news_events)}, raw_yt={len(raw_youtube_events)}, "
                 f"filtered_news={len(news_events)}, filtered_yt={len(youtube_events)})"
             )
             ops_warnings.append(warning)
-            logger.warning(f"[MacroNewsLayer] 운영 경고 — {warning}")
+            if is_holiday_low_signal:
+                logger.info(f"[MacroNewsLayer] 운영 참고 — {warning}")
+            else:
+                logger.warning(f"[MacroNewsLayer] 운영 경고 — {warning}")
+
         try:
             dq_state = self.dq_monitor.evaluate(
                 cycle_started_at=cycle_started_at,
@@ -250,7 +272,6 @@ class MacroNewsLayer:
         health_score = self._compute_health_score(news_events, youtube_events)
 
         # Step 4.5: FR-02 장중/장외 프로파일 자동 전환
-        market_profile = get_market_profile()
         dynamic_thresholds = get_threshold_for_profile(market_profile)
         logger.info(
             f"[MacroNewsLayer] 시장 프로파일: {market_profile} "

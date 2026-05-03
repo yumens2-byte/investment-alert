@@ -160,3 +160,18 @@
 - 전수 테스트(2회)
   - [ ] `pytest -q --no-cov`
   - [ ] `pytest -q tests/test_bfix_dq_input.py tests/test_event_scarcity_guard.py --no-cov`
+
+
+## 8) 컨플릭트 에러 대응 가이드 (운영)
+
+- 충돌 다발 구간:
+  - `core/data_logger.py`의 score breakdown 블록
+  - `detection/macro_news_layer.py`의 Step 2.x(수집 후 정책) 블록
+- 완화 원칙:
+  1. 문자열 포맷 로직은 헬퍼 함수로 분리 (`_format_ops_warnings`) 후 호출부 최소화
+  2. Event Scarcity 룰은 단일 블록에서만 수정하고, 로그 메시지 포맷은 키-값 구조 유지
+  3. 시장 프로파일 계산은 1회만 수행 후 재사용 (중복 계산/중복 diff 방지)
+- 병합 절차:
+  - `git fetch && git rebase origin/<target-branch>`
+  - 충돌 시 위 2개 파일을 우선 수동 병합
+  - `pytest -q tests/test_data_logger.py tests/test_event_scarcity_guard.py --no-cov` 재검증
