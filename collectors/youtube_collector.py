@@ -198,11 +198,6 @@ class YouTubeCollector(BaseCollector):
                     f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}, url={rss_url}"
                 )
                 return self._collect_channel_via_api(channel_name, channel_id, channel_weight)
-                    f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}"
-                )
-                return events
-            entries = getattr(feed, "entries", [])
-
             entries = getattr(feed, "entries", [])
             for entry in entries:
                 published_at = self._parse_entry_date(entry)
@@ -227,7 +222,6 @@ class YouTubeCollector(BaseCollector):
                 self.last_failed_channels = []
             self.last_failed_channels.append(channel_name)
             logger.warning(
-                f"[YouTubeCollector] {channel_name} 수집 실패: {type(e).__name__}: {e}, url={rss_url}"
                 f"[YouTubeCollector] {channel_name} 수집 실패: "
                 f"{type(e).__name__}: {e}, url={rss_url}"
             )

@@ -199,6 +199,7 @@ def check_env_vars() -> None:
         "SUPABASE_URL": "Supabase 프로젝트 URL",
         "SUPABASE_KEY": "Supabase anon key",
         "YOUTUBE_CHANNELS": "YouTube 채널 목록",
+        "YOUTUBE_API_KEY": "YouTube Data API Key (RSS 실패시 대체 수집용)",
         "TELEGRAM_BOT_TOKEN": "Telegram Bot 토큰",
         "TELEGRAM_FREE_CHANNEL_ID": "TG 무료 채널 ID",
         "TELEGRAM_PAID_CHANNEL_ID": "TG 유료 채널 ID",
