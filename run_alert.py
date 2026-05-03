@@ -22,7 +22,7 @@ from publishers.alert_formatter import AlertFormatter
 from publishers.telegram_publisher import TelegramPublisher
 from publishers.x_publisher import XPublisher
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 
 def _log_preflight_warnings() -> None:
