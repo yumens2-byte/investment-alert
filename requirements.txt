@@ -23,3 +23,6 @@ pytest-mock==3.14.0
 
 # 코드 품질 (GTT팀 공통지침 11 준수)
 ruff==0.7.4
+
+# 제미나이
+google-genai>=1.0.0
