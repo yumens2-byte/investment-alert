@@ -158,13 +158,19 @@ class DataLogger:
         logger.info("[DataLogger] 📊 Score 분해")
         logger.info(_DIV)
         logger.info("  뉴스 점수    : %.4f", result.news_score)
+        logger.info("  뉴스 이벤트 수: %d건", len(result.news_events))
         logger.info("  YouTube 보너스: %.4f", result.youtube_bonus)
+        logger.info("  YouTube 이벤트 수: %d건", len(result.youtube_events))
         logger.info("  ─────────────────────")
         logger.info("  최종 Score   : %.4f", result.score)
         logger.info("  데이터 건강도: %.2f (%.0f%%)", result.health_score, result.health_score * 100)
         logger.info("")
         logger.info("  ▶ 판정 레벨  : %s", result.level)
         logger.info("  ▶ 판정 근거  : %s", result.reasoning[:120])
+        # 운영 경고는 본문 가독성을 위해 최대 2건까지만 노출한다.
+        # (전체 원본은 result.ops_warnings에 보존되어 다른 sink에서 전량 사용 가능)
+        if getattr(result, "ops_warnings", None):
+            logger.info("  ▶ 운영 경고  : %s", " | ".join(result.ops_warnings[:2]))
 
     def log_alert_signal(self, signal: AlertSignal) -> None:
         """
