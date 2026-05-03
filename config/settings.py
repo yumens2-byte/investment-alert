@@ -148,7 +148,7 @@ NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
               "auto_l1": False,
           },
           "ap_business": {          # reuters_breaking 교체 — Reuters RSS 폐쇄 (2026-05-03)
-              "url": "https://feeds.apnews.com/apf-business",
+              "url": "https://www.investing.com/rss/news.rss",
               "auto_l1": False,
           },
       },
