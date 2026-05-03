@@ -28,7 +28,7 @@ from config.settings import NEWS_SOURCE_REGISTRY, NEWS_WINDOW_HOURS
 from core.logger import get_logger
 from validators.news_validator import NewsValidator
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -91,6 +91,92 @@ URGENT_KEYWORDS_L2: dict[str, float] = {
     "rate hike": 3.0,
     "rate cut": 3.0,
     "recession": 3.5,
+}
+
+# ────────────────────────────────────────────────────────
+# 확장 키워드 v1.1.0 (2026-05-03)
+# 추가 영역: 관세·무역 / 지정학 / 미국 신용·재정 / AI·반도체 규제
+# 변경 없음: URGENT_KEYWORDS_L1, URGENT_KEYWORDS_L2 (기존 유지)
+# ────────────────────────────────────────────────────────
+
+# 관세·무역정책 충격
+URGENT_KEYWORDS_TARIFF: dict[str, float] = {
+    # L1급 — 즉각 충격 표현 (단독 Tier A 1건으로 keyword_score >= 3.5)
+    "tariff war": 4.0,
+    "trade war": 3.5,
+    "trade war escalates": 4.5,
+    "export ban": 4.0,
+    "import embargo": 4.5,
+    "reciprocal tariff": 4.0,
+    "trade deal collapse": 4.5,
+    # L2급 — 단독 threshold 초과하나 Score 낮음 (복합 시 상승)
+    "tariff": 2.0,
+    "new tariff": 2.5,
+    "export control": 2.5,
+    "trade sanction": 3.0,
+    "section 301": 3.5,
+    "section 232": 3.5,
+    "trade restriction": 2.5,
+}
+
+# 지정학적 긴급사태
+URGENT_KEYWORDS_GEO: dict[str, float] = {
+    # L1급
+    "nuclear threat": 5.0,
+    "nuclear attack": 5.0,
+    "nuclear weapon": 4.5,
+    "military strike": 5.0,
+    "oil embargo": 4.5,
+    "strait of hormuz": 4.5,
+    "war declared": 5.0,
+    # L2급 — 복합 표현만 수록 (단독 일반어 제외)
+    "invasion": 3.5,
+    "airstrike": 3.0,
+    "missile attack": 3.5,
+    "military escalation": 3.5,
+    "geopolitical crisis": 3.5,
+    "conflict escalation": 3.0,
+}
+
+# 미국 신용·재정 위기
+URGENT_KEYWORDS_FISCAL: dict[str, float] = {
+    # L1급
+    "us credit downgrade": 5.0,
+    "credit downgrade us": 5.0,
+    "debt default": 5.0,
+    "debt ceiling crisis": 4.5,
+    "government shutdown begins": 4.5,
+    "moody's downgrades": 4.0,
+    "fitch downgrades": 4.0,
+    "treasury auction fails": 4.5,
+    "treasury auction tail": 4.0,
+    # L2급
+    "debt ceiling": 3.5,
+    "government shutdown": 3.0,
+    "credit downgrade": 3.0,
+    "fiscal cliff": 3.0,
+    "bond auction": 2.5,
+    "deficit warning": 2.5,
+}
+
+# AI·반도체 규제 충격
+URGENT_KEYWORDS_TECH_REG: dict[str, float] = {
+    # L1급
+    "chip export ban": 4.5,
+    "semiconductor ban": 4.5,
+    "semiconductor export ban": 4.5,
+    "nvidia ban": 4.5,
+    "tsmc restriction": 4.0,
+    "chip export control": 4.0,
+    "ai executive order": 4.0,
+    # L2급
+    "semiconductor restriction": 3.5,
+    "chip restriction": 3.0,
+    "entity list": 2.5,
+    "antitrust ruling tech": 3.5,
+    "big tech breakup": 3.5,
+    "ai regulation": 2.0,
+    "export control ai": 3.0,
 }
 
 # 제목: 키워드 매칭 최소 임계값
@@ -372,7 +458,16 @@ class NewsCollector(BaseCollector):
             score = 0.0
             matched: list[str] = []
 
-            all_keywords = {**URGENT_KEYWORDS_L1, **URGENT_KEYWORDS_L2}
+            # 변경
+            all_keywords = {
+                **URGENT_KEYWORDS_L1,
+                **URGENT_KEYWORDS_L2,
+                **URGENT_KEYWORDS_TARIFF,
+                **URGENT_KEYWORDS_GEO,
+                **URGENT_KEYWORDS_FISCAL,
+                **URGENT_KEYWORDS_TECH_REG,
+            }
+              
             for keyword, weight in all_keywords.items():
                 if keyword in combined:
                     score += weight
