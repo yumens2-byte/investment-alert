@@ -77,6 +77,11 @@ class MacroNewsResult:
     reasoning_json: dict = field(default_factory=dict)  # FR-05 표준화 reasoning (JSONB)
     policy_version: str = "v1.0.0"  # 적용된 정책 버전 (semver)
     dq_state: DataQualityState | None = None  # FR-03 데이터 품질 평가 결과
+    # 제목: 운영 경고 버킷
+    # 내용: Alert 레벨(발행 정책)에 직접 영향 주지 않는 관측성 신호를 누적 보관.
+    #       예) 수집은 정상이나 키워드 필터로 전량 탈락한 희소 상태(event_scarcity).
+    #       런타임 로그/대시보드/운영 채널 전송기의 입력으로 사용한다.
+    ops_warnings: list[str] = field(default_factory=list)
 
 
 # ────────────────────────────────────────────────────────
@@ -92,6 +97,12 @@ YOUTUBE_SOLO_L2_MIN_SCORE: float = 6.0
 
 # 제목: 최소 소스 수 (L1 복수소스 조건)
 L1_MIN_SOURCE_COUNT: int = 2
+
+# 제목: 휴장일 저신호 완화 기준
+# 내용: 주말/휴장일에는 매크로 긴급 뉴스가 적은 것이 일반적이므로
+#       raw 이벤트가 소량일 때는 경고 강도를 낮춰 노이즈를 줄인다.
+HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX: int = 4
+HOLIDAY_LOW_SIGNAL_RAW_YT_MAX: int = 1
 
 
 class MacroNewsLayer:
@@ -186,12 +197,55 @@ class MacroNewsLayer:
             logger.error(f"[MacroNewsLayer] YouTube 수집 실패 (계속 진행): {type(e).__name__}: {e}")
             source_results["youtube_collector"] = False
 
+        # Step 2.4: 시장 프로파일 사전 계산 (경고 강도/임계값 공통 사용)
+        market_profile = get_market_profile()
+
         # Step 2.5 (신규): 데이터 품질 평가 (DQ Monitor)
         cycle_finished_at = datetime.now(UTC)
         # B-fix: 키워드 필터 *전*의 raw events를 DQ에 전달 (수집 시스템 건강성 측정용)
         # collect()의 결과(news_events)는 이미 키워드 필터 후 → DQ 입력으로 부적합
         raw_news_events = list(getattr(self.news_collector, "last_raw_events", []) or [])
         raw_youtube_events = list(getattr(self.youtube_collector, "last_raw_events", []) or [])
+        # Step 2.6: Event Scarcity Guard (사전 고도화 1차 적용)
+        # 목적: 수집(raw)은 있으나 키워드 필터 후 이벤트가 0건인 상태를 운영 경고로 표면화.
+        # 주의: 본 경고는 발행 레벨을 강제 승격/강등하지 않고, 운영 관측용으로만 사용.
+        ops_warnings: list[str] = []
+        # 판정식 설명:
+        #  - 좌변(raw 합계)>0: HTTP/RSS 수집 자체는 실패하지 않았음을 의미
+        #  - 우변(filtered 합계)==0: 정책 키워드 기준으로는 유효 이벤트가 0건
+        #  => 장애 알림이 아닌 운영 경고로 분류하여 관측성만 강화한다.
+        if (len(raw_news_events) + len(raw_youtube_events)) > 0 and (len(news_events) + len(youtube_events)) == 0:
+            # 휴장일 + 저신호 구간(소량 raw, 유튜브 raw 없음)은 예상 가능한 패턴으로 간주해
+            # 경고를 완전히 제거하지 않고 severity=info로 낮춰 운영 피로도를 줄인다.
+            is_holiday_low_signal = (
+                market_profile == "holiday"
+                and len(raw_news_events) <= HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX
+                and len(raw_youtube_events) <= HOLIDAY_LOW_SIGNAL_RAW_YT_MAX
+            )
+            severity = "info" if is_holiday_low_signal else "warn"
+
+            # warning 문자열은 후속 파서(로그 검색/알림 라우터)에서 안정적으로
+            # 식별할 수 있도록 prefix(event_scarcity) + key=value 포맷을 유지한다.
+            warning = (
+                f"event_scarcity[{severity}]: raw_events_present_but_all_filtered "
+                f"(profile={market_profile}, raw_news={len(raw_news_events)}, raw_yt={len(raw_youtube_events)}, "
+                f"filtered_news={len(news_events)}, filtered_yt={len(youtube_events)})"
+            )
+            ops_warnings.append(warning)
+            if is_holiday_low_signal:
+                logger.info(f"[MacroNewsLayer] 운영 참고 — {warning}")
+            else:
+                logger.warning(f"[MacroNewsLayer] 운영 경고 — {warning}")
+        # YouTube 채널 일부 실패(예: 404/500)는 source_success_rate를 즉시 깨지 않을 수 있어
+        # 별도 운영 경고로 노출해 채널 설정 오류를 빠르게 발견하도록 한다.
+        failed_channels = list(getattr(self.youtube_collector, "last_failed_channels", []) or [])
+        if failed_channels:
+            channel_warning = (
+                "youtube_channel_failures: "
+                f"count={len(failed_channels)}, channels={','.join(failed_channels[:3])}"
+            )
+            ops_warnings.append(channel_warning)
+            logger.warning(f"[MacroNewsLayer] 운영 경고 — {channel_warning}")
         try:
             dq_state = self.dq_monitor.evaluate(
                 cycle_started_at=cycle_started_at,
@@ -227,7 +281,6 @@ class MacroNewsLayer:
         health_score = self._compute_health_score(news_events, youtube_events)
 
         # Step 4.5: FR-02 장중/장외 프로파일 자동 전환
-        market_profile = get_market_profile()
         dynamic_thresholds = get_threshold_for_profile(market_profile)
         logger.info(
             f"[MacroNewsLayer] 시장 프로파일: {market_profile} "
@@ -278,6 +331,7 @@ class MacroNewsLayer:
             reasoning_json=reasoning_json,
             policy_version=self.policy_version,
             dq_state=dq_state,
+            ops_warnings=ops_warnings,
         )
 
     def _compute_news_score(self, events: list[CollectorEvent]) -> float:
