@@ -94,3 +94,18 @@ def test_event_scarcity_warn_on_intraday(monkeypatch) -> None:
 
     assert "event_scarcity[warn]" in result.ops_warnings[0]
 
+
+def test_youtube_channel_failure_ops_warning_is_emitted() -> None:
+    news_mock = MagicMock()
+    news_mock.collect.return_value = []
+    news_mock.last_raw_events = []
+
+    yt_mock = MagicMock()
+    yt_mock.collect.return_value = []
+    yt_mock.last_raw_events = []
+    yt_mock.last_failed_channels = ["미주은", "윤석종"]
+
+    layer = MacroNewsLayer(news_collector=news_mock, youtube_collector=yt_mock)
+    result = layer.detect()
+
+    assert any(w.startswith("youtube_channel_failures:") for w in result.ops_warnings)

@@ -238,6 +238,16 @@ class MacroNewsLayer:
                 logger.info(f"[MacroNewsLayer] 운영 참고 — {warning}")
             else:
                 logger.warning(f"[MacroNewsLayer] 운영 경고 — {warning}")
+        # YouTube 채널 일부 실패(예: 404/500)는 source_success_rate를 즉시 깨지 않을 수 있어
+        # 별도 운영 경고로 노출해 채널 설정 오류를 빠르게 발견하도록 한다.
+        failed_channels = list(getattr(self.youtube_collector, "last_failed_channels", []) or [])
+        if failed_channels:
+            channel_warning = (
+                "youtube_channel_failures: "
+                f"count={len(failed_channels)}, channels={','.join(failed_channels[:3])}"
+            )
+            ops_warnings.append(channel_warning)
+            logger.warning(f"[MacroNewsLayer] 운영 경고 — {channel_warning}")
 
         try:
             dq_state = self.dq_monitor.evaluate(
