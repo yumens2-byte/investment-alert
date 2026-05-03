@@ -52,6 +52,7 @@ def test_event_scarcity_warning_absent_when_filtered_events_exist() -> None:
     yt_mock = MagicMock()
     yt_mock.collect.return_value = []
     yt_mock.last_raw_events = [_make_event("raw_yt_1")]
+    yt_mock.last_raw_events = []
 
     layer = MacroNewsLayer(news_collector=news_mock, youtube_collector=yt_mock)
     result = layer.detect()
@@ -67,6 +68,7 @@ def test_event_scarcity_low_signal_on_holiday_is_info(monkeypatch) -> None:
     yt_mock = MagicMock()
     yt_mock.collect.return_value = []
     yt_mock.last_raw_events = [_make_event("raw_yt_1")]
+    yt_mock.last_raw_events = []
 
     monkeypatch.setattr("detection.macro_news_layer.get_market_profile", lambda: "holiday")
 
@@ -91,3 +93,4 @@ def test_event_scarcity_warn_on_intraday(monkeypatch) -> None:
     result = layer.detect()
 
     assert "event_scarcity[warn]" in result.ops_warnings[0]
+
