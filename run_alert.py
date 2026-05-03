@@ -123,22 +123,22 @@ def main() -> None:
     x_err = tg_free_err = tg_paid_err = tg_internal_err = None
 
     tg_msg = formatter.format_tg(
-    level=signal.level,
-    score=signal.score,
-    reasoning=signal.reasoning,
-    top_news_titles=signal.top_news_titles,
-    top_youtube_titles=signal.top_youtube_titles,
-    health_score=signal.health_score,
-    alert_id=signal.alert_id,
-)
-
-if signal.publish_x:
-    x_msg = formatter.format_x(     # publish_x=True일 때만 생성 → Gemini 호출 조건부
-        level=signal.level,
-        score=signal.score,
-        reasoning=signal.reasoning,
-        top_news_titles=signal.top_news_titles,
-    )
+          level=signal.level,
+          score=signal.score,
+          reasoning=signal.reasoning,
+          top_news_titles=signal.top_news_titles,
+          top_youtube_titles=signal.top_youtube_titles,
+          health_score=signal.health_score,
+          alert_id=signal.alert_id,
+      )
+      
+      if signal.publish_x:
+          x_msg = formatter.format_x(     # publish_x=True일 때만 생성 → Gemini 호출 조건부
+              level=signal.level,
+              score=signal.score,
+              reasoning=signal.reasoning,
+              top_news_titles=signal.top_news_titles,
+          )
     try:
         x_pub.publish(x_msg)
         x_ok = True
