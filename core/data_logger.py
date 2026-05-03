@@ -191,6 +191,25 @@ class DataLogger:
             return None
         return " | ".join(warnings[:limit])
 
+
+    def _format_ops_warnings(self, result: MacroNewsResult, limit: int = 2) -> str | None:
+        """
+        제목: 운영 경고 문자열 포맷터
+        내용: 병합 충돌을 줄이기 위해 경고 렌더링 로직을 한 곳으로 모읍니다.
+              경고가 없으면 None을 반환하고, 있으면 상위 limit건을 ` | `로 결합합니다.
+
+        Args:
+            result: MacroNewsResult
+            limit: 로그 출력 최대 개수
+
+        Returns:
+            str | None: 포맷된 경고 문자열
+        """
+        warnings = getattr(result, "ops_warnings", None)
+        if not warnings:
+            return None
+        return " | ".join(warnings[:limit])
+
     def log_alert_signal(self, signal: AlertSignal) -> None:
         """
         제목: AlertSignal 발행 계획 로그 출력
