@@ -114,6 +114,9 @@ class YouTubeCollector(BaseCollector):
         self.window_hours = window_hours
         self.today_only = today_only
 
+        # 운영 관측성: 채널별 수집 실패 목록(run 단위)
+        self.last_failed_channels: list[str] = []
+
         mode = "당일(UTC)" if today_only else f"{window_hours}h"
         logger.info(
             f"[YouTubeCollector] v{VERSION} 초기화 "
@@ -142,6 +145,7 @@ class YouTubeCollector(BaseCollector):
 
         # Step 1: 채널별 수집
         raw_events: list[CollectorEvent] = []
+        self.last_failed_channels = []
         for channel in self.channels:
             channel_events = self._collect_channel(channel)
             raw_events.extend(channel_events)
@@ -182,6 +186,15 @@ class YouTubeCollector(BaseCollector):
 
         try:
             feed = self._retry_request(feedparser.parse, rss_url)
+            status = getattr(feed, "status", None)
+            # RSS 파서가 예외를 던지지 않아도 HTTP 4xx/5xx를 status로 제공할 수 있으므로
+            # 채널 실패로 분류하여 운영 경고(last_failed_channels)에 반영한다.
+            if isinstance(status, int) and status >= 400:
+                self.last_failed_channels.append(channel_name)
+                logger.warning(
+                    f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}, url={rss_url}"
+                )
+                return events
             entries = getattr(feed, "entries", [])
 
             for entry in entries:
@@ -217,9 +230,13 @@ class YouTubeCollector(BaseCollector):
                 events.append(event)
 
         except Exception as e:
+            # 방어코드: 구버전 객체/테스트 더블에서도 AttributeError 없이 동작
+            if not hasattr(self, "last_failed_channels"):
+                self.last_failed_channels = []
+            self.last_failed_channels.append(channel_name)
             logger.warning(
                 f"[YouTubeCollector] {channel_name} 수집 실패: "
-                f"{type(e).__name__}: {e}"
+                f"{type(e).__name__}: {e}, url={rss_url}"
             )
 
         return events
