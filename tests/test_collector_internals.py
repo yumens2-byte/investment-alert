@@ -307,3 +307,76 @@ def test_yt_is_within_window_naive_datetime() -> None:
     # tzinfo 제거 → 코드가 UTC로 가정 변환해도 윈도우 안쪽
     naive_dt = (today_start_utc + timedelta(seconds=1)).replace(tzinfo=None)
     assert collector._is_within_window(naive_dt) is True
+
+
+def test_collect_channel_http_status_404_marks_failed_channel(mocker) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    feed = type("Feed", (), {"status": 404, "entries": []})()
+    mocker.patch.object(collector, "_retry_request", return_value=feed)
+
+    events = collector._collect_channel(channel)
+
+    assert events == []
+    assert "A" in collector.last_failed_channels
+
+
+def test_collect_channel_http_status_404_log_includes_rss_url(mocker, caplog) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    feed = type("Feed", (), {"status": 404, "entries": []})()
+    mocker.patch.object(collector, "_retry_request", return_value=feed)
+
+    collector._collect_channel(channel)
+
+    assert "url=https://www.youtube.com/feeds/videos.xml?channel_id=UC123" in caplog.text
+
+
+def test_collect_channel_rss_fail_then_api_fallback_returns_events(mocker) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    collector.youtube_api_key = "test-key"
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    feed = type("Feed", (), {"status": 404, "entries": []})()
+    mocker.patch.object(collector, "_retry_request", return_value=feed)
+
+    class Resp:
+        status_code = 200
+        def json(self):
+            return {"items": [{"id": {"videoId": "vid1"}, "snippet": {"title": "긴급 속보", "description": "d", "publishedAt": "2026-05-03T00:10:00Z"}}]}
+    mocker.patch("collectors.youtube_collector.requests.get", return_value=Resp())
+
+    events = collector._collect_channel(channel)
+
+    assert len(events) == 1
+    assert events[0].url.endswith("vid1")
+
+
+def test_collect_channel_retry_then_api_fallback_call_count(mocker) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    collector.youtube_api_key = "test-key"
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    retry_mock = mocker.patch.object(collector, "_retry_request", side_effect=RuntimeError("err"))
+
+    class Resp:
+        status_code = 200
+        def json(self):
+            return {"items": []}
+    api_mock = mocker.patch("collectors.youtube_collector.requests.get", return_value=Resp())
+
+    collector._collect_channel(channel)
+
+    # _retry_request 내부에서 3회 재시도 후 예외를 발생시키고, 이후 API fallback 1회 수행
+    assert retry_mock.call_count == 1
+    assert api_mock.call_count == 1
