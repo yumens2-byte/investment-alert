@@ -186,6 +186,15 @@ class YouTubeCollector(BaseCollector):
 
         try:
             feed = self._retry_request(feedparser.parse, rss_url)
+            status = getattr(feed, "status", None)
+            # RSS 파서가 예외를 던지지 않아도 HTTP 4xx/5xx를 status로 제공할 수 있으므로
+            # 채널 실패로 분류하여 운영 경고(last_failed_channels)에 반영한다.
+            if isinstance(status, int) and status >= 400:
+                self.last_failed_channels.append(channel_name)
+                logger.warning(
+                    f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}"
+                )
+                return events
             entries = getattr(feed, "entries", [])
 
             for entry in entries:

@@ -307,3 +307,18 @@ def test_yt_is_within_window_naive_datetime() -> None:
     # tzinfo 제거 → 코드가 UTC로 가정 변환해도 윈도우 안쪽
     naive_dt = (today_start_utc + timedelta(seconds=1)).replace(tzinfo=None)
     assert collector._is_within_window(naive_dt) is True
+
+
+def test_collect_channel_http_status_404_marks_failed_channel(mocker) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    feed = type("Feed", (), {"status": 404, "entries": []})()
+    mocker.patch.object(collector, "_retry_request", return_value=feed)
+
+    events = collector._collect_channel(channel)
+
+    assert events == []
+    assert "A" in collector.last_failed_channels
