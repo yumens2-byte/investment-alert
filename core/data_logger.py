@@ -167,10 +167,6 @@ class DataLogger:
         logger.info("")
         logger.info("  ▶ 판정 레벨  : %s", result.level)
         logger.info("  ▶ 판정 근거  : %s", result.reasoning[:120])
-        # 운영 경고 출력은 헬퍼 함수로 위임해 충돌 지점을 최소화한다.
-        warnings_line = self._format_ops_warnings(result, limit=2)
-        if warnings_line:
-            logger.info("  ▶ 운영 경고  : %s", warnings_line)
 
 
     def _format_ops_warnings(self, result: MacroNewsResult, limit: int = 2) -> str | None:
