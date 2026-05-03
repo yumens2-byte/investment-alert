@@ -94,6 +94,10 @@ def main() -> None:
         f"[run_alert] 감지 결과: level={result.level}, "
         f"score={result.score:.2f}, health={result.health_score:.2f}"
     )
+    # 운영 경고는 DataLogger 출력과 별개로 즉시 요약 로그를 남겨
+    # 로그 탐색/알림 룰(예: CloudWatch, Loki)에서 누락 없이 감지되도록 한다.
+    if getattr(result, "ops_warnings", None):
+        logger.info("[run_alert] 운영 경고 감지: %s", " | ".join(result.ops_warnings[:2]))
 
     # ── Step 3: AlertSignal 생성 ─────────────────────────────
     signal = alert_engine.process(result)
