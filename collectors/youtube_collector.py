@@ -142,6 +142,7 @@ class YouTubeCollector(BaseCollector):
 
         # Step 1: 채널별 수집
         raw_events: list[CollectorEvent] = []
+        self.last_failed_channels = []
         for channel in self.channels:
             channel_events = self._collect_channel(channel)
             raw_events.extend(channel_events)
@@ -217,6 +218,7 @@ class YouTubeCollector(BaseCollector):
                 events.append(event)
 
         except Exception as e:
+            self.last_failed_channels.append(channel_name)
             logger.warning(
                 f"[YouTubeCollector] {channel_name} 수집 실패: "
                 f"{type(e).__name__}: {e}"
