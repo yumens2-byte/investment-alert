@@ -46,12 +46,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Anti-bot random delay (schedule only)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
-        run: |
-          DELAY=$((RANDOM % 200))
-          echo "⏱️ Random delay: ${DELAY}s"
-          sleep $DELAY
+      # - name: Anti-bot random delay (schedule only)
+      #   if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
+      #   run: |
+      #     DELAY=$((RANDOM % 200))
+      #     echo "⏱️ Random delay: ${DELAY}s"
+      #     sleep $DELAY
 
       - name: Create log directory
         run: mkdir -p logs
