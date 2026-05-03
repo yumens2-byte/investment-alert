@@ -322,3 +322,17 @@ def test_collect_channel_http_status_404_marks_failed_channel(mocker) -> None:
 
     assert events == []
     assert "A" in collector.last_failed_channels
+
+
+def test_collect_channel_http_status_404_log_includes_rss_url(mocker, caplog) -> None:
+    from collectors.youtube_collector import YouTubeCollector
+
+    collector = YouTubeCollector(channels_str="A:UC123")
+    channel = {"name": "A", "id": "UC123", "weight": 1.0}
+
+    feed = type("Feed", (), {"status": 404, "entries": []})()
+    mocker.patch.object(collector, "_retry_request", return_value=feed)
+
+    collector._collect_channel(channel)
+
+    assert "url=https://www.youtube.com/feeds/videos.xml?channel_id=UC123" in caplog.text

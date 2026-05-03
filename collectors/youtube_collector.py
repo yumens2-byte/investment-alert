@@ -192,6 +192,7 @@ class YouTubeCollector(BaseCollector):
             if isinstance(status, int) and status >= 400:
                 self.last_failed_channels.append(channel_name)
                 logger.warning(
+                    f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}, url={rss_url}"
                     f"[YouTubeCollector] {channel_name} RSS HTTP 비정상: status={status}"
                 )
                 return events
@@ -236,7 +237,7 @@ class YouTubeCollector(BaseCollector):
             self.last_failed_channels.append(channel_name)
             logger.warning(
                 f"[YouTubeCollector] {channel_name} 수집 실패: "
-                f"{type(e).__name__}: {e}"
+                f"{type(e).__name__}: {e}, url={rss_url}"
             )
 
         return events
