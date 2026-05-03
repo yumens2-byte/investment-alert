@@ -122,12 +122,6 @@ def main() -> None:
     x_ok = tg_free_ok = tg_paid_ok = tg_internal_ok = False
     x_err = tg_free_err = tg_paid_err = tg_internal_err = None
 
-    x_msg = formatter.format_x(
-    level=signal.level,
-    score=signal.score,
-    reasoning=signal.reasoning,
-    top_news_titles=signal.top_news_titles,
-)
 tg_msg = formatter.format_tg(
     level=signal.level,
     score=signal.score,
@@ -139,6 +133,12 @@ tg_msg = formatter.format_tg(
 )
 
 if signal.publish_x:
+    x_msg = formatter.format_x(     # publish_x=True일 때만 생성 → Gemini 호출 조건부
+        level=signal.level,
+        score=signal.score,
+        reasoning=signal.reasoning,
+        top_news_titles=signal.top_news_titles,
+    )
     try:
         x_pub.publish(x_msg)
         x_ok = True
