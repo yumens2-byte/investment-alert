@@ -143,15 +143,15 @@ NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
         },
     },
     "A": {
-        "reuters_markets": {
-            "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
-            "auto_l1": False,
-        },
-        "wsj_markets": {
-            "url": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-            "auto_l1": False,
-        },
-    },
+          "reuters_markets": {
+              "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+              "auto_l1": False,
+          },
+          "reuters_breaking": {          # wsj_markets 교체 — RSS 16개월 정지 확인 (2026-05-03)
+              "url": "https://feeds.reuters.com/reuters/businessNews",
+              "auto_l1": False,
+          },
+      },
     "B": {
         "yahoo_finance": {
             "url": "https://finance.yahoo.com/news/rssindex",
