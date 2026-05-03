@@ -2,17 +2,22 @@
 제목: Alert 메시지 포맷터
 내용: AlertSignal을 받아 X(Twitter)와 Telegram 발행용 메시지를 생성합니다.
       L1/L2/L3 레벨별로 톤과 긴급도가 다르게 구성됩니다.
+      v1.1.0: DRY_RUN=false 시 Gemini AI 자연어 트윗 생성 지원.
 
 주요 클래스:
   - AlertFormatter: 레벨별 X/TG 메시지 생성
 
 주요 함수:
-  - AlertFormatter.format_x(signal): X용 단문 메시지 (280자 이내)
-  - AlertFormatter.format_tg(signal): TG용 HTML 메시지 (상세)
+  - AlertFormatter.format_x(): X용 단문 메시지 (280자 이내)
+  - AlertFormatter.format_tg(): TG용 HTML 메시지 (상세)
+  - AlertFormatter._generate_ai_tweet(): Gemini AI 자연어 트윗 (DRY_RUN=false 전용)
 """
 
 from __future__ import annotations
 
+import os
+import random as _random
+import re as _re
 from typing import TYPE_CHECKING
 
 from core.logger import get_logger
@@ -20,7 +25,7 @@ from core.logger import get_logger
 if TYPE_CHECKING:
     pass
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -57,6 +62,40 @@ LEVEL_META: dict[str, dict[str, str]] = {
 # X 메시지 최대 길이
 X_MAX_LENGTH = 275  # 5자 여유
 
+# ────────────────────────────────────────────────────────
+# X 해시태그 풀 (anti-bot 랜덤화 — v1.1.0)
+# ────────────────────────────────────────────────────────
+_X_HASHTAG_POOL: list[str] = [
+    "#미국증시 #투자경보",
+    "#글로벌경제 #시장경보",
+    "#미국시장 #InvestmentAlert",
+    "#경제위기 #투자주의",
+    "#InvestmentOS #미국증시",
+    "#시장경보 #글로벌증시",
+    "#미국경제 #Alert",
+]
+
+# ────────────────────────────────────────────────────────
+# 비한국어 차단 패턴 (v1.1.0)
+# 힌디/아랍/키릴/일본 가나/태국/히브리/그리스 등 감지
+# 한자(CJK)는 한국 콘텐츠에서 허용 — false positive 방지
+# ────────────────────────────────────────────────────────
+_NON_KR_PATTERN = _re.compile(
+    r"[\u0900-\u097F"  # Devanagari (힌디)
+    r"\u0600-\u06FF"   # Arabic
+    r"\u0400-\u04FF"   # Cyrillic (러시아어)
+    r"\u3040-\u30FF"   # Hiragana/Katakana (일본어 가나)
+    r"\u0E00-\u0E7F"   # Thai
+    r"\u0590-\u05FF"   # Hebrew
+    r"\u0370-\u03FF]"  # Greek
+)
+
+
+def _is_dry_run() -> bool:
+    """환경변수 DRY_RUN 파싱. 미설정 시 True (안전 기본값)."""
+    val = os.environ.get("DRY_RUN", "true").lower()
+    return val not in ("false", "0", "no")
+
 
 class AlertFormatter:
     """
@@ -67,6 +106,7 @@ class AlertFormatter:
       - 레벨별 이모지/헤더/톤 적용
       - X: 280자 이내 단문 (해시태그 포함)
       - TG: HTML 포맷 상세 메시지 (reasoning, top_news 포함)
+      - v1.1.0: DRY_RUN=false 시 Gemini AI 자연어 트윗 생성
     """
 
     def format_x(
@@ -78,13 +118,14 @@ class AlertFormatter:
     ) -> str:
         """
         제목: X(Twitter) 발행용 메시지 생성
-        내용: 280자 이내 단문. 레벨 이모지, 점수, 상위 뉴스 제목 1건, 해시태그 포함.
+        내용: DRY_RUN=false이면 Gemini AI 자연어 트윗 시도.
+              실패 또는 DRY_RUN=true이면 기존 템플릿 fallback.
 
         처리 플로우:
-          1. 레벨 메타 조회
-          2. 본문 구성 (점수, 판정 근거 요약, 상위 뉴스)
-          3. 280자 초과 시 뉴스 제목 절단
-          4. 해시태그 부착
+          1. DRY_RUN 환경변수 확인
+          2. DRY_RUN=false → _generate_ai_tweet() 시도
+          3. AI 성공 → AI 트윗 반환
+          4. AI 실패 또는 DRY_RUN=true → _format_x_template() 반환
 
         Args:
             level: 'L1' | 'L2' | 'L3'
@@ -94,6 +135,25 @@ class AlertFormatter:
 
         Returns:
             str: X 발행용 메시지 (280자 이내)
+        """
+        if not _is_dry_run():
+            ai_msg = self._generate_ai_tweet(level, score, reasoning, top_news_titles)
+            if ai_msg:
+                return ai_msg
+
+        return self._format_x_template(level, score, reasoning, top_news_titles)
+
+    def _format_x_template(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+    ) -> str:
+        """
+        제목: 기존 템플릿 방식 메시지 생성
+        내용: DRY_RUN=true 또는 AI 실패 시 fallback.
+              v1.0.0 format_x() 로직 이관, 동작 변경 없음.
         """
         meta = LEVEL_META.get(level, LEVEL_META["L3"])
         prefix = meta["x_prefix"]
@@ -121,6 +181,103 @@ class AlertFormatter:
             message = message[:X_MAX_LENGTH]
 
         return message
+
+    def _generate_ai_tweet(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+    ) -> str | None:
+        """
+        제목: Gemini AI 자연어 트윗 생성 (DRY_RUN=false 전용)
+        내용: gemini-2.5-flash-lite 호출 → 한국어 자연어 Alert 트윗 생성.
+              실패/검증 탈락 시 None 반환 → 호출자가 템플릿 fallback.
+
+        처리 플로우:
+          1. GEMINI_API_KEY 존재 확인
+          2. google-genai SDK로 Gemini 호출
+          3. 응답 텍스트 추출
+          4. 검증 1: 200자 이내
+          5. 검증 2: 비한국어 문자 가드
+          6. 성공 시 트윗 반환, 실패 시 None
+
+        Args:
+            level: 'L1' | 'L2' | 'L3'
+            score: Macro-News Score
+            reasoning: 판정 근거 텍스트
+            top_news_titles: 상위 뉴스 제목 리스트
+
+        Returns:
+            str | None: AI 생성 트윗 또는 None (fallback 신호)
+        """
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            logger.warning("[AlertFormatter] GEMINI_API_KEY 미설정 → 템플릿 fallback")
+            return None
+
+        try:
+            from google import genai as _genai  # noqa: PLC0415
+
+            client = _genai.Client(api_key=api_key)
+
+            level_tone = {
+                "L1": "매우 긴박하고 심각한 경보. 즉각적인 위험 수준.",
+                "L2": "경고 수준. 시장 주의 필요.",
+                "L3": "모니터링 수준. 관찰 권장.",
+            }.get(level, "주의 수준.")
+
+            top_news_str = top_news_titles[0][:80] if top_news_titles else "없음"
+            hashtags = _random.choice(_X_HASHTAG_POOL)
+
+            prompt = (
+                f"미국 금융시장 긴급 Alert 트윗을 한국어로 작성하세요.\n\n"
+                f"[Alert 정보]\n"
+                f"- 등급: {level} / Score: {score:.1f}/10\n"
+                f"- 상황: {level_tone}\n"
+                f"- 판정 근거: {reasoning[:150]}\n"
+                f"- 주요 뉴스: {top_news_str}\n\n"
+                f"[작성 조건]\n"
+                f"1. 200자 이내 (필수)\n"
+                f"2. 첫 줄: 이모지 + 한 줄 핵심 요약\n"
+                f"3. 중간: 구체적 상황 1~2줄\n"
+                f"4. '⚠️ 투자 참고 정보, 투자 권유 아님' 문구 포함\n"
+                f"5. 마지막 줄 해시태그: {hashtags}\n"
+                f"6. 자연스러운 한국어 (사람이 쓴 것처럼, 매번 다른 표현)\n"
+                f"7. 트윗 본문만 출력 (설명·마크다운 불필요)\n"
+            )
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt,
+            )
+            tweet = response.text.strip() if response.text else ""
+
+            # 검증 1: 길이
+            if not tweet or len(tweet) > X_MAX_LENGTH:
+                logger.warning(
+                    f"[AlertFormatter] AI 트윗 길이 오류 ({len(tweet)}자) → fallback"
+                )
+                return None
+
+            # 검증 2: 비한국어 가드
+            if _NON_KR_PATTERN.search(tweet):
+                logger.warning(
+                    "[AlertFormatter] AI 트윗 비한국어 문자 감지 → fallback"
+                )
+                return None
+
+            logger.info(
+                f"[AlertFormatter] AI 트윗 생성 완료 ({len(tweet)}자, level={level})"
+            )
+            return tweet
+
+        except Exception as e:
+            logger.warning(
+                f"[AlertFormatter] AI 트윗 생성 실패 → 템플릿 fallback: "
+                f"{type(e).__name__}: {e}"
+            )
+            return None
 
     def format_tg(
         self,
