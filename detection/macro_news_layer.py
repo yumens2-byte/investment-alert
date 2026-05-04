@@ -659,8 +659,10 @@ class MacroNewsLayer:
             "weight": float(score),
             "health_score": float(health_score),
         })
-        reason = (
-            f"NONE: score={score:.2f} < {th['l3_score']} 또는 "
-            f"health={health_score:.2f} 미달"
-        )
+        _none_reasons: list[str] = []
+        if score < th["l3_score"]:
+            _none_reasons.append(f"score={score:.2f} < {th['l3_score']}")
+        if health_score < th["health_l3"]:
+            _none_reasons.append(f"health={health_score:.2f} < {th['health_l3']}")
+        reason = "NONE: " + (" & ".join(_none_reasons) if _none_reasons else "기준 미달")
         return "NONE", reason, contributing_factors
