@@ -340,25 +340,32 @@ def test_collect_channel_http_status_404_log_includes_rss_url(mocker, caplog) ->
 
 def test_collect_channel_rss_fail_then_api_fallback_returns_events(mocker) -> None:
     from collectors.youtube_collector import YouTubeCollector
+    from datetime import UTC, datetime
 
     collector = YouTubeCollector(channels_str="A:UC123")
     collector.youtube_api_key = "test-key"
     channel = {"name": "A", "id": "UC123", "weight": 1.0}
 
-    feed = type("Feed", (), {"status": 404, "entries": []})()
-    mocker.patch.object(collector, "_retry_request", return_value=feed)
+    feed_mock = MagicMock()
+    feed_mock.status = 404
+    mocker.patch.object(collector, "_retry_request", return_value=feed_mock)
+
+    # 제목: publishedAt 동적 처리
+    # 내용: today_only=True 기준 UTC 당일 필터 적용 대상.
+    #       하드코딩 날짜는 날짜 경계 시점에 window 이탈로 테스트 실패 유발.
+    today_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     class Resp:
         status_code = 200
         def json(self):
-            return {"items": [{"id": {"videoId": "vid1"}, "snippet": {"title": "긴급 속보", "description": "d", "publishedAt": "2026-05-03T00:10:00Z"}}]}
+            return {"items": [{"id": {"videoId": "vid1"}, "snippet": {"title": "긴급속보", "description": "", "publishedAt": today_utc}}]}
+
     mocker.patch("collectors.youtube_collector.requests.get", return_value=Resp())
 
     events = collector._collect_channel(channel)
 
     assert len(events) == 1
     assert events[0].url.endswith("vid1")
-
 
 def test_collect_channel_retry_then_api_fallback_call_count(mocker) -> None:
     from collectors.youtube_collector import YouTubeCollector
