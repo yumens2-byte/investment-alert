@@ -653,20 +653,20 @@ class MacroNewsLayer:
             )
             return "L3", reason, contributing_factors
 
-      # ── 7. 미달 → NONE ─────────────────────────────────────
-        contributing_factors.append({
-            "factor": "below_threshold",
-            "weight": float(score),
-            "health_score": float(health_score),
-        })
-        # 제목: NONE 판정 근거 정확화
-        # 내용: score와 health 조건을 독립적으로 판단하여 실제 미달 원인만 표시.
-        #       기존 OR 방식은 score가 임계값을 초과해도 "score < X" 텍스트를
-        #       출력하는 팩트 오류를 유발했음.
-        _none_reasons: list[str] = []
-        if score < th["l3_score"]:
-            _none_reasons.append(f"score={score:.2f} < {th['l3_score']}")
-        if health_score < th["health_l3"]:
-            _none_reasons.append(f"health={health_score:.2f} < {th['health_l3']}")
-        reason = "NONE: " + (" & ".join(_none_reasons) if _none_reasons else "기준 미달")
-        return "NONE", reason, contributing_factors
+            # ── 7. 미달 → NONE ─────────────────────────────────────
+              contributing_factors.append({
+                  "factor": "below_threshold",
+                  "weight": float(score),
+                  "health_score": float(health_score),
+              })
+              # 제목: NONE 판정 근거 정확화
+              # 내용: score와 health 조건을 독립적으로 판단하여 실제 미달 원인만 표시.
+              #       기존 OR 방식은 score가 임계값을 초과해도 "score < X" 텍스트를
+              #       출력하는 팩트 오류를 유발했음.
+              _none_reasons: list[str] = []
+              if score < th["l3_score"]:
+                  _none_reasons.append(f"score={score:.2f} < {th['l3_score']}")
+              if health_score < th["health_l3"]:
+                  _none_reasons.append(f"health={health_score:.2f} < {th['health_l3']}")
+              reason = "NONE: " + (" & ".join(_none_reasons) if _none_reasons else "기준 미달")
+              return "NONE", reason, contributing_factors
