@@ -31,7 +31,7 @@ from db.dq_store import DataQualityStore
 from detection.dq_monitor import DataQualityMonitor, DataQualityState
 from detection.reasoning_builder import ReasoningBuilder
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 logger = get_logger(__name__)
 
@@ -653,12 +653,16 @@ class MacroNewsLayer:
             )
             return "L3", reason, contributing_factors
 
-        # ── 7. 미달 → NONE ─────────────────────────────────────
+      # ── 7. 미달 → NONE ─────────────────────────────────────
         contributing_factors.append({
             "factor": "below_threshold",
             "weight": float(score),
             "health_score": float(health_score),
         })
+        # 제목: NONE 판정 근거 정확화
+        # 내용: score와 health 조건을 독립적으로 판단하여 실제 미달 원인만 표시.
+        #       기존 OR 방식은 score가 임계값을 초과해도 "score < X" 텍스트를
+        #       출력하는 팩트 오류를 유발했음.
         _none_reasons: list[str] = []
         if score < th["l3_score"]:
             _none_reasons.append(f"score={score:.2f} < {th['l3_score']}")
