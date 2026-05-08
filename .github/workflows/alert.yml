@@ -14,11 +14,12 @@ jobs:
   alert:
     name: Alert Detection & Publish
     runs-on: ubuntu-latest
+    timeout-minutes: 10                          # ← 추가 (점검 #3)
 
     env:
       DQ_FRESH_WINDOW_SECONDS : ${{ secrets.DQ_FRESH_WINDOW_SECONDS }}
       TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
-      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
       YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
       YOUTUBE_API_KEY : ${{ secrets.YOUTUBE_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
