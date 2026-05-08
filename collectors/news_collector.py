@@ -434,6 +434,75 @@ class NewsCollector(BaseCollector):
         # 내용: 현재 시각 반환 (최소 수집 보장)
         return datetime.now(UTC)
 
+      # ────────────────────────────────────────────────────────
+      # B시스템 보완 키워드 v1.2.0 (2026-05-09)
+      # 추가 영역: 매크로 지표 / 중앙은행 / 실적 / 정책 일반
+      # 목적: A시스템(가격 기반)이 놓치는 선행 정보 신호 포착
+      # ────────────────────────────────────────────────────────
+      
+      # 매크로 지표 발표 — A가 못 잡는 선행 신호
+      URGENT_KEYWORDS_MACRO_DATA: dict[str, float] = {
+          # L2급
+          "cpi report": 3.0,
+          "inflation report": 3.0,
+          "nonfarm payrolls": 3.5,
+          "non-farm payrolls": 3.5,
+          "jobs report": 2.5,
+          "unemployment rate": 2.5,
+          "ppi report": 2.5,
+          "pce inflation": 3.0,
+          "gdp report": 2.5,
+          "ism manufacturing": 2.0,
+          "retail sales": 2.0,
+          "consumer confidence": 2.0,
+          # L1급 — 시장 충격
+          "inflation surge": 3.5,
+          "hot cpi": 4.0,
+          "jobs miss": 3.0,
+          "jobs beat": 2.5,
+      }
+      
+      # Fed/중앙은행 인물·일정 — A가 못 잡는 정책 신호
+      URGENT_KEYWORDS_CENTRAL_BANK: dict[str, float] = {
+          "powell speech": 3.5,
+          "powell testimony": 4.0,
+          "powell remarks": 3.0,
+          "fomc minutes": 3.0,
+          "fomc meeting": 2.5,
+          "fed dot plot": 3.0,
+          "jackson hole": 3.5,
+          "fed pivot": 4.0,
+          "hawkish": 2.0,
+          "dovish": 2.0,
+          "ecb decision": 2.5,
+          "boj decision": 2.5,
+          "bank of japan": 2.5,
+      }
+      
+      # 실적 시즌 — A는 가격 반응 후에야 잡음
+      URGENT_KEYWORDS_EARNINGS: dict[str, float] = {
+          "earnings beat": 2.0,
+          "earnings miss": 2.5,
+          "guidance cut": 3.5,
+          "guidance raised": 2.5,
+          "revenue miss": 3.0,
+          "revenue beat": 2.0,
+          "profit warning": 4.0,
+          "earnings season": 1.5,
+          "preliminary results": 2.5,
+      }
+      
+      # 정책·발표 일반 — 헤드라인 충격
+      URGENT_KEYWORDS_POLICY: dict[str, float] = {
+          "trump speech": 3.0,
+          "trump announces": 3.0,
+          "white house statement": 2.5,
+          "presidential order": 3.5,
+          "executive order": 3.0,
+          "treasury statement": 2.5,
+          "fed statement": 3.0,
+      }
+
     def _filter_by_keywords(self, events: list[CollectorEvent]) -> list[CollectorEvent]:
         """
         제목: 키워드 1차 필터
