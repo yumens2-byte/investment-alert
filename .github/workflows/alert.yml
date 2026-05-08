@@ -8,7 +8,7 @@ name: Alert Pipeline
       dry_run:
         description: 'DRY_RUN 모드 (true=모의, false=실발행)'
         type: boolean
-        default: true
+        default: false
 
 jobs:
   alert:
