@@ -552,6 +552,19 @@ class NewsCollector(BaseCollector):
                 event.matched_keywords = matched
                 filtered.append(event)
 
+        # v1.2.0: 탈락 뉴스 디버그 로그 (운영 튜닝용)
+        # 모든 뉴스가 키워드 필터에서 탈락한 경우, 상위 3건의 제목/소스를 기록.
+        # → 키워드 사전 보완 시 어떤 단어를 추가해야 하는지 판단 자료
+        if events and not filtered:
+            samples = [
+                f"{e.source_name}|{e.title[:80]}"
+                for e in events[:3]
+            ]
+            logger.info(
+                f"[NewsCollector] 운영 참고 — 키워드 필터 0건 통과. "
+                f"검증 통과 입력={len(events)}건. 상위 샘플: {samples}"
+            )
+
         return filtered
 
     def _apply_ai_scoring(self, events: list[CollectorEvent]) -> list[CollectorEvent]:
