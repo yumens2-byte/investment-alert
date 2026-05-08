@@ -28,7 +28,7 @@ from config.settings import NEWS_SOURCE_REGISTRY, NEWS_WINDOW_HOURS
 from core.logger import get_logger
 from validators.news_validator import NewsValidator
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 logger = get_logger(__name__)
 
