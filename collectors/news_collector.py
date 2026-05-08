@@ -535,6 +535,11 @@ class NewsCollector(BaseCollector):
                 **URGENT_KEYWORDS_GEO,
                 **URGENT_KEYWORDS_FISCAL,
                 **URGENT_KEYWORDS_TECH_REG,
+                # v1.2.0 추가: B시스템 보완 영역 (A가 놓치는 선행 신호)
+                **URGENT_KEYWORDS_MACRO_DATA,
+                **URGENT_KEYWORDS_CENTRAL_BANK,
+                **URGENT_KEYWORDS_EARNINGS,
+                **URGENT_KEYWORDS_POLICY,
             }
               
             for keyword, weight in all_keywords.items():
