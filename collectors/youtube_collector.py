@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import socket as _socket
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,7 +28,10 @@ from collectors.base import BaseCollector, CollectorEvent
 from config.settings import CHANNEL_WEIGHTS, YOUTUBE_TODAY_ONLY, YOUTUBE_WINDOW_HOURS
 from core.logger import get_logger
 
-VERSION = "1.1.0"
+# A1 패치 (v1.2.0): YouTube RSS hang 차단 — socket level timeout 강제.
+_socket.setdefaulttimeout(15)
+
+VERSION = "1.2.0"
 
 logger = get_logger(__name__)
 

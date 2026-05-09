@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket as _socket
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
@@ -28,7 +29,11 @@ from config.settings import NEWS_SOURCE_REGISTRY, NEWS_WINDOW_HOURS
 from core.logger import get_logger
 from validators.news_validator import NewsValidator
 
-VERSION = "1.2.0"
+# A1 패치 (v1.3.0): feedparser는 timeout 인자가 없으므로 socket level로 강제.
+# 운영에서 RSS 서버 hang 시 GitHub Actions timeout(10분) 도달 위험 차단.
+_socket.setdefaulttimeout(15)
+
+VERSION = "1.3.0"
 
 logger = get_logger(__name__)
 
@@ -540,7 +545,7 @@ class NewsCollector(BaseCollector):
                 **URGENT_KEYWORDS_EARNINGS,
                 **URGENT_KEYWORDS_POLICY,
             }
-              
+
             for keyword, weight in all_keywords.items():
                 if keyword in combined:
                     score += weight

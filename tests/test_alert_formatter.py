@@ -120,3 +120,43 @@ def test_level_meta_completeness() -> None:
         assert level in LEVEL_META
         assert "emoji" in LEVEL_META[level]
         assert "tg_header" in LEVEL_META[level]
+
+
+# ────────────────────────────────────────────────────────
+# v1.2.0 패치 회귀 테스트 (B3 / B4 — 안티봇 셔플)
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_format_x_template_uses_random_hashtag_pool(
+    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3 신규 (v1.2.0): _format_x_template은 _X_HASHTAG_POOL에서 랜덤 선택"""
+    from publishers.alert_formatter import _X_HASHTAG_POOL
+
+    # DRY_RUN=true 강제 → 템플릿 경로 사용 (AI 트윗 회피)
+    monkeypatch.setenv("DRY_RUN", "true")
+    msg = formatter.format_x("L2", 5.5, "test", [])
+    # POOL 중 하나의 첫 해시태그가 본문에 포함되어야 함
+    assert any(tag.split()[0] in msg for tag in _X_HASHTAG_POOL)
+
+
+@pytest.mark.unit
+def test_format_tg_includes_random_time_phrase(formatter: AlertFormatter) -> None:
+    """B3 신규 (v1.2.0): format_tg는 _TG_HEADER_TIME_PHRASES에서 시간문구 추가"""
+    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
+
+    msg = formatter.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-1")
+    assert any(phrase in msg for phrase in _TG_HEADER_TIME_PHRASES)
+
+
+@pytest.mark.unit
+def test_format_tg_time_phrase_varies_across_calls(formatter: AlertFormatter) -> None:
+    """B3 신규 (v1.2.0): 동일 입력 다회 호출 시 시간문구 변화 (안티봇 검증)"""
+    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
+
+    msgs = [
+        formatter.format_tg("L2", 5.5, "test", [], [], 0.85, f"uuid-{i}")
+        for i in range(20)
+    ]
+    # 20회 중 최소 2종 이상 시간문구 등장 (확률적 검증)
+    found = {p for p in _TG_HEADER_TIME_PHRASES if any(p in m for m in msgs)}
+    assert len(found) >= 2

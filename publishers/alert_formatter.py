@@ -25,7 +25,7 @@ from core.logger import get_logger
 if TYPE_CHECKING:
     pass
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 logger = get_logger(__name__)
 
@@ -73,6 +73,16 @@ _X_HASHTAG_POOL: list[str] = [
     "#InvestmentOS #미국증시",
     "#시장경보 #글로벌증시",
     "#미국경제 #Alert",
+]
+
+# ────────────────────────────────────────────────────────
+# TG 시간문구 셔플 풀 (anti-bot 랜덤화 — v1.2.0)
+# 동일 콘텐츠라도 매 발행 다른 시간 표현으로 본문 변형
+# Free / Paid 채널 간 본문 차별화에 사용 (run_alert.py에서 별도 호출)
+# ────────────────────────────────────────────────────────
+_TG_HEADER_TIME_PHRASES: list[str] = [
+    "방금 감지", "현재", "직전 사이클 기준", "최근 감지",
+    "본 사이클 기준", "지금 막", "방금 전",
 ]
 
 # ────────────────────────────────────────────────────────
@@ -164,7 +174,8 @@ class AlertFormatter:
         # 제목: 상위 뉴스 제목 1건
         top_news = top_news_titles[0][:60] + "..." if top_news_titles else ""
 
-        hashtags = "#미국증시 #Alert #InvestmentOS"
+        # B3 패치 (v1.2.0): _X_HASHTAG_POOL 활용 — 안티봇 정책
+        hashtags = _random.choice(_X_HASHTAG_POOL)
 
         body_parts = [
             f"{prefix}",
@@ -308,9 +319,12 @@ class AlertFormatter:
         """
         meta = LEVEL_META.get(level, LEVEL_META["L3"])
         header = meta["tg_header"]
+        # B3 패치 (v1.2.0): 매 발행 다른 시간문구 — 안티봇 정책
+        time_phrase = _random.choice(_TG_HEADER_TIME_PHRASES)
 
         lines: list[str] = [
             header,
+            f"<i>— {time_phrase}</i>",
             "",
             f"<b>Score</b>: {score:.2f} | <b>Health</b>: {health_score:.0%}",
             f"<b>판정근거</b>: {reasoning[:200]}",

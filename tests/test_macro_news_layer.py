@@ -315,3 +315,85 @@ def test_detect_collector_failure_graceful() -> None:
     assert result.score == 0.0
     assert result.dq_state is not None
     assert result.dq_state.degraded_flag is True
+
+
+# ────────────────────────────────────────────────────────
+# v1.1.0 패치 회귀 테스트 (B1 / B2)
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_judge_level_tier_s_auto_l1_dq_healthy_still_l1() -> None:
+    """B2 회귀 (v1.1.0): DQ healthy + Tier S auto_l1 → 여전히 L1"""
+    from detection.dq_monitor import DataQualityState
+
+    layer = make_layer()
+    event = make_news_event(tier="S", auto_l1=True, ai_score=5.0)
+    dq_healthy = DataQualityState(
+        fresh_event_ratio=1.0,
+        source_success_rate=1.0,
+        lag_seconds_p95=10.0,
+        volume_zscore=0.0,
+        degraded_flag=False,
+        degraded_reasons=[],
+    )
+    level, reason, _factors = layer._judge_level(
+        2.0, [event], health_score=0.5, dq_state=dq_healthy
+    )
+    assert level == "L1"
+    assert "auto_l1" in reason
+
+
+@pytest.mark.unit
+def test_judge_level_tier_s_auto_l1_dq_degraded_demoted_to_l2() -> None:
+    """B2 신규 (v1.1.0 β): DQ degraded + Tier S auto_l1 → L2 강등"""
+    from detection.dq_monitor import DataQualityState
+
+    layer = make_layer()
+    event = make_news_event(tier="S", auto_l1=True, ai_score=5.0)
+    dq_degraded = DataQualityState(
+        fresh_event_ratio=0.0,
+        source_success_rate=0.50,
+        lag_seconds_p95=20.0,
+        volume_zscore=-1.0,
+        degraded_flag=True,
+        degraded_reasons=["source_success_rate < 0.75", "lag_seconds_p95 > 90.0"],
+    )
+    level, reason, factors = layer._judge_level(
+        2.0, [event], health_score=0.5, dq_state=dq_degraded
+    )
+    assert level == "L2"
+    assert "강등" in reason
+    assert any(f["factor"] == "tier_s_auto_l1_dq_degraded_demote" for f in factors)
+
+
+@pytest.mark.unit
+def test_compute_health_score_recency_uses_env_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B1 신규 (v1.1.0): DQ_FRESH_WINDOW_SECONDS env로 recency 윈도우 동적 조정.
+    1h 윈도우 vs 3h 윈도우 비교로 recency 적용 효과 검증."""
+    from datetime import UTC, datetime, timedelta
+
+    layer = make_layer()
+    # 2시간 전 이벤트 — 1h 윈도우 밖, 3h 윈도우 안
+    old_event = make_news_event()
+    old_event.published_at = datetime.now(UTC) - timedelta(hours=2)
+
+    # 3h 윈도우 → recency=1.0 적용
+    monkeypatch.setenv("DQ_FRESH_WINDOW_SECONDS", str(3 * 3600))
+    health_3h = layer._compute_health_score([old_event], [])
+
+    # 1h 윈도우 → recency=0 (2h 전 이벤트는 윈도우 밖)
+    monkeypatch.setenv("DQ_FRESH_WINDOW_SECONDS", str(3600))
+    health_1h = layer._compute_health_score([old_event], [])
+
+    # B1 패치 핵심: 3h 윈도우가 1h 윈도우보다 높은 health 산출
+    # recency 가중치 0.25이므로 차이 ≈ 0.25 (정확히는 1.0 vs 0.0 → 0.25 차이)
+    assert health_3h > health_1h
+    assert health_3h - health_1h > 0.20  # recency 효과 가시화 임계
+
+
+@pytest.mark.unit
+def test_compute_health_score_recency_default_is_5400(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B1 신규 (v1.1.0): env 미설정 시 기본 5400초(=cron×2) 적용"""
+    monkeypatch.delenv("DQ_FRESH_WINDOW_SECONDS", raising=False)
+    from detection.macro_news_layer import _get_recency_window_seconds
+
+    assert _get_recency_window_seconds() == 5400

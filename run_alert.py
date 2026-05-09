@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import random as _random
 import sys
+import time as _time
 
 from collectors.news_collector import NewsCollector
 from collectors.youtube_collector import YouTubeCollector
@@ -22,7 +24,7 @@ from publishers.alert_formatter import AlertFormatter
 from publishers.telegram_publisher import TelegramPublisher
 from publishers.x_publisher import XPublisher
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 
 def _log_preflight_warnings() -> None:
@@ -122,15 +124,16 @@ def main() -> None:
     x_ok = tg_free_ok = tg_paid_ok = tg_internal_ok = False
     x_err = tg_free_err = tg_paid_err = tg_internal_err = None
 
-    tg_msg = formatter.format_tg(
-        level=signal.level,
-        score=signal.score,
-        reasoning=signal.reasoning,
-        top_news_titles=signal.top_news_titles,
-        top_youtube_titles=signal.top_youtube_titles,
-        health_score=signal.health_score,
-        alert_id=signal.alert_id,
-    )
+    # B3 패치 (v1.1.0): 채널 간 jitter — 안티봇 정책
+    def _publish_jitter() -> None:
+        """채널 간 발행 시각 분산. X 안티봇 + 중복발행 위험 완화."""
+        delay = _random.uniform(2.0, 5.0)
+        logger.debug(f"[run_alert] 채널 간 jitter sleep {delay:.2f}s")
+        _time.sleep(delay)
+
+    # B3 패치 (v1.1.0): 채널별 본문 차별화 — 안티봇 정책
+    # AS-IS: tg_msg 한 번 생성 → Free/Paid 동일 본문 발행 = 안티봇 위험
+    # TO-BE: 각 분기 안에서 format_tg 별도 호출 → random 셔플로 본문 차별화
 
     if signal.publish_x:
         x_msg = formatter.format_x(     # publish_x=True일 때만 생성 → Gemini 호출 조건부
@@ -145,22 +148,43 @@ def main() -> None:
         except Exception as e:
             x_err = str(e)
             logger.error(f"[run_alert] X 발행 실패: {e}")
+        _publish_jitter()
 
     if signal.publish_tg_free:
         try:
-            tg_pub.publish_free(tg_msg)
+            tg_msg_free = formatter.format_tg(
+                level=signal.level,
+                score=signal.score,
+                reasoning=signal.reasoning,
+                top_news_titles=signal.top_news_titles,
+                top_youtube_titles=signal.top_youtube_titles,
+                health_score=signal.health_score,
+                alert_id=signal.alert_id,
+            )
+            tg_pub.publish_free(tg_msg_free)
             tg_free_ok = True
         except Exception as e:
             tg_free_err = str(e)
             logger.error(f"[run_alert] TG Free 발행 실패: {e}")
+        _publish_jitter()
 
     if signal.publish_tg_paid:
         try:
-            tg_pub.publish_paid(tg_msg)
+            tg_msg_paid = formatter.format_tg(
+                level=signal.level,
+                score=signal.score,
+                reasoning=signal.reasoning,
+                top_news_titles=signal.top_news_titles,
+                top_youtube_titles=signal.top_youtube_titles,
+                health_score=signal.health_score,
+                alert_id=signal.alert_id,
+            )
+            tg_pub.publish_paid(tg_msg_paid)
             tg_paid_ok = True
         except Exception as e:
             tg_paid_err = str(e)
             logger.error(f"[run_alert] TG Paid 발행 실패: {e}")
+        _publish_jitter()
 
     if signal.publish_tg_internal:
         try:
@@ -170,6 +194,7 @@ def main() -> None:
                     alert_id=signal.alert_id,
                 )
             else:
+                # Internal은 운영자 채널 — 셔플 불필요. 기존 포맷 유지.
                 internal_msg = formatter.format_internal(
                     level=signal.level,
                     score=signal.score,
@@ -185,6 +210,7 @@ def main() -> None:
         except Exception as e:
             tg_internal_err = str(e)
             logger.error(f"[run_alert] TG Internal 발행 실패: {e}")
+        # 마지막 채널 — jitter 불필요
 
     # ── Step 7: 발행 결과 기록 (B5 패치 — audit fallback 분기) ───
     if signal.audit_persisted:

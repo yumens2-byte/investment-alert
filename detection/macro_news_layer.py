@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os as _os
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -31,7 +32,7 @@ from db.dq_store import DataQualityStore
 from detection.dq_monitor import DataQualityMonitor, DataQualityState
 from detection.reasoning_builder import ReasoningBuilder
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -103,6 +104,27 @@ L1_MIN_SOURCE_COUNT: int = 2
 #       raw 이벤트가 소량일 때는 경고 강도를 낮춰 노이즈를 줄인다.
 HOLIDAY_LOW_SIGNAL_RAW_NEWS_MAX: int = 4
 HOLIDAY_LOW_SIGNAL_RAW_YT_MAX: int = 1
+
+
+# ────────────────────────────────────────────────────────
+# B1 패치 (v1.1.0): health_score recency 윈도우 동적화
+# ────────────────────────────────────────────────────────
+# 내용: 기존 1h 하드코딩은 cron */45 + "전일 누적 데이터 기반 운영"과 부정합 →
+#       recency 0.5 이하 빈발 → health<0.90 → L1 자동 강등 빈발.
+#       DQ_FRESH_WINDOW_SECONDS env로 dq_monitor와 윈도우 공유 (메모리 #27).
+#       기본값은 cron 주기(*/45 = 2700s)×2 = 5400초 (안전 마진).
+_HEALTH_RECENCY_SECONDS_DEFAULT: int = 5400
+
+
+def _get_recency_window_seconds() -> int:
+    """
+    제목: health_score recency 윈도우 환경변수 조회
+    내용: DQ_FRESH_WINDOW_SECONDS 우선, 미설정/오류 시 5400초 기본값.
+    """
+    try:
+        return int(_os.getenv("DQ_FRESH_WINDOW_SECONDS", _HEALTH_RECENCY_SECONDS_DEFAULT))
+    except (TypeError, ValueError):
+        return _HEALTH_RECENCY_SECONDS_DEFAULT
 
 
 class MacroNewsLayer:
@@ -475,12 +497,15 @@ class MacroNewsLayer:
             source_diversity = min(source_diversity + 0.1, 1.0)
 
         # ── 요소 2: 최신성 (0.25) ──────────────────────────────
-        # 내용: 1시간 이내 이벤트 비율
+        # 내용: 환경변수 기반 동적 윈도우 (B1 패치 v1.1.0).
+        # 운영 cron */45 + 전일 데이터 기반 시스템 정합성 확보.
+        # 기본 5400초(=cron×2). DQ_FRESH_WINDOW_SECONDS env로 동적 조정.
         now = datetime.now(UTC)
-        cutoff_1h = now - timedelta(hours=1)
+        recency_window_sec = _get_recency_window_seconds()
+        cutoff = now - timedelta(seconds=recency_window_sec)
         recent_count = sum(
             1 for e in all_events
-            if e.published_at.tzinfo is not None and e.published_at >= cutoff_1h
+            if e.published_at.tzinfo is not None and e.published_at >= cutoff
         )
         recency = recent_count / len(all_events) if all_events else 0.0
 
@@ -541,7 +566,43 @@ class MacroNewsLayer:
         th = thresholds if thresholds is not None else self.thresholds
         contributing_factors: list[dict] = []
 
-        # ── 0. SYSTEM_DEGRADED 우선 단락 (FR-03) ────────────────
+        # ── 0. Tier S auto_l1 우선 평가 (β 절충안 v1.1.0) ──────
+        # 내용: 기존엔 SYSTEM_DEGRADED 단락이 먼저 발화하여 Tier S 핵심 헤드라인이
+        #       Internal-only로 묻혔음. β 절충안은 DQ degraded 시에도 L2(Free+Paid+Internal)
+        #       로 살리되 X 발행은 차단하여 안티봇·중복발행 위험을 동시에 회피.
+        tier_s_events = [e for e in news_events if e.auto_l1]
+        if tier_s_events:
+            sample = tier_s_events[0]
+            if dq_state is not None and dq_state.degraded_flag:
+                # B2 패치: DQ degraded + Tier S → L2 강등
+                contributing_factors.append({
+                    "factor": "tier_s_auto_l1_dq_degraded_demote",
+                    "weight": None,
+                    "matched_source": sample.source_name,
+                    "title": sample.title[:60],
+                    "dq_reasons": dq_state.degraded_reasons[:3],
+                })
+                reason = (
+                    f"L2(강등): Tier S auto_l1 감지되었으나 DQ degraded "
+                    f"(source={sample.source_name}, "
+                    f"dq={','.join(dq_state.degraded_reasons[:2])})"
+                )
+                return "L2", reason, contributing_factors
+
+            # 기존 동작: DQ healthy → L1
+            contributing_factors.append({
+                "factor": "tier_s_auto_l1",
+                "weight": None,
+                "matched_source": sample.source_name,
+                "title": sample.title[:60],
+            })
+            reason = (
+                f"L1: Tier S auto_l1 이벤트 감지 "
+                f"(source={sample.source_name}, title='{sample.title[:40]}')"
+            )
+            return "L1", reason, contributing_factors
+
+        # ── 1. SYSTEM_DEGRADED 단락 (Tier S 미발화 케이스, FR-03) ──
         if dq_state is not None and dq_state.degraded_flag:
             contributing_factors.append({
                 "factor": "data_quality_degraded",
@@ -554,22 +615,6 @@ class MacroNewsLayer:
                 f"reasons={','.join(dq_state.degraded_reasons[:2])})"
             )
             return "SYSTEM_DEGRADED", reason, contributing_factors
-
-        # ── 1. Tier S auto_l1 이벤트 → 무조건 L1 ─────────────
-        tier_s_events = [e for e in news_events if e.auto_l1]
-        if tier_s_events:
-            sample = tier_s_events[0]
-            contributing_factors.append({
-                "factor": "tier_s_auto_l1",
-                "weight": None,
-                "matched_source": sample.source_name,
-                "title": sample.title[:60],
-            })
-            reason = (
-                f"L1: Tier S auto_l1 이벤트 감지 "
-                f"(source={sample.source_name}, title='{sample.title[:40]}')"
-            )
-            return "L1", reason, contributing_factors
 
         # ── 2. Score 기반 L1 판정 ──────────────────────────────
         max_source_count = max((e.source_count for e in news_events), default=0)
