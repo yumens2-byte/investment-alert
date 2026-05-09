@@ -27,7 +27,7 @@ from collectors.base import BaseCollector, CollectorEvent
 from config.settings import CHANNEL_WEIGHTS, YOUTUBE_TODAY_ONLY, YOUTUBE_WINDOW_HOURS
 from core.logger import get_logger
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -38,6 +38,7 @@ logger = get_logger(__name__)
 # 제목: 한글 긴급 키워드
 # 내용: 3인 전문가 협의 설계서 Round 2 확정값
 YOUTUBE_URGENT_KEYWORDS_KR: dict[str, float] = {
+    # 기존 17개 (유지)
     "긴급": 3.0,
     "속보": 3.5,
     "대폭락": 4.0,
@@ -55,6 +56,19 @@ YOUTUBE_URGENT_KEYWORDS_KR: dict[str, float] = {
     "주의보": 2.0,
     "서킷브레이커": 4.0,
     "거래정지": 4.0,
+    # v1.1.0 추가: B시스템 선행 정보 포착 영역
+    "발표": 1.5,        # "Fed 발표", "정부 발표"
+    "예고": 1.5,        # "금리 예고", "발표 예고"
+    "FOMC": 3.0,        # 영문 약어 그대로
+    "파월": 2.5,        # Fed 의장
+    "관세": 2.5,        # 트럼프 관세 정책
+    "실적": 1.5,        # 기업 실적 발표
+    "어닝": 2.0,        # 어닝 시즌
+    "고용지표": 2.5,    # NFP 등
+    "CPI": 2.5,         # 영문 약어
+    "인플레": 1.5,      # 인플레이션
+    "긴축": 2.0,        # 통화 긴축
+    "완화": 1.5,        # 통화 완화
 }
 
 # 제목: 제외 패턴
@@ -65,10 +79,12 @@ YOUTUBE_EXCLUSION_PATTERNS: list[str] = [
     "오늘의 시황",
     "오늘의 요약",    # 일상 요약 브리핑 제외
     "오늘의 정리",    # 일상 정리 브리핑 제외
-    "[26년",          # 날짜 형식 브리핑 제외 ([26년 04월 xx일)
-    "[25년",          # 날짜 형식 브리핑 제외 ([25년 xx월 xx일)
-    "예상",
-    "전망",
+    "[26년",          # 날짜 형식 브리핑 제외
+    "[25년",          # 날짜 형식 브리핑 제외
+    # v1.1.0: "예상", "전망" 제거 — B시스템 선행 정보 포착에 필요
+    # 더 구체적 표현으로 정밀 제외 (시장 분석 영상은 살아남)
+    "주말 정리",      # 정밀 제외
+    "이번주 정리",    # 정밀 제외
     "정리",
     "recap",
 ]
