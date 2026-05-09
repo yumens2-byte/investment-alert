@@ -22,7 +22,7 @@ from publishers.alert_formatter import AlertFormatter
 from publishers.telegram_publisher import TelegramPublisher
 from publishers.x_publisher import XPublisher
 
-VERSION = "1.1.0"
+VERSION = "1.0.1"
 
 
 def _log_preflight_warnings() -> None:
@@ -73,7 +73,7 @@ def main() -> None:
     logger = get_logger(__name__)
     logger.info(f"[run_alert] v{VERSION} 시작 - 로그파일: {_log_file}")
     _log_preflight_warnings()
- 
+
     # ── Step 1: 의존성 초기화 ────────────────────────────────
     alert_store = AlertStore()
     news_collector = NewsCollector()
@@ -82,6 +82,10 @@ def main() -> None:
         news_collector=news_collector,
         youtube_collector=yt_collector,
     )
+    alert_engine = AlertEngine(alert_store=alert_store)
+    formatter = AlertFormatter()
+    x_pub = XPublisher()
+    tg_pub = TelegramPublisher()
 
     # ── Step 2: 감지 ────────────────────────────────────────
     logger.info("[run_alert] Step 2: Macro-News 감지 시작")
