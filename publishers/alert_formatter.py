@@ -25,7 +25,7 @@ from core.logger import get_logger
 if TYPE_CHECKING:
     pass
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 logger = get_logger(__name__)
 
@@ -125,6 +125,7 @@ class AlertFormatter:
         score: float,
         reasoning: str,
         top_news_titles: list[str],
+        force_template: bool = False,
     ) -> str:
         """
         제목: X(Twitter) 발행용 메시지 생성
@@ -132,24 +133,27 @@ class AlertFormatter:
               실패 또는 DRY_RUN=true이면 기존 템플릿 fallback.
 
         처리 플로우:
-          1. DRY_RUN 환경변수 확인
-          2. DRY_RUN=false → _generate_ai_tweet() 시도
+          1. force_template=True 또는 DRY_RUN=true → 템플릿 즉시 반환
+          2. _generate_ai_tweet() 시도
           3. AI 성공 → AI 트윗 반환
-          4. AI 실패 또는 DRY_RUN=true → _format_x_template() 반환
+          4. AI 실패 → _format_x_template() 반환
 
         Args:
             level: 'L1' | 'L2' | 'L3'
             score: Macro-News Score
             reasoning: 판정 근거 텍스트
             top_news_titles: 상위 뉴스 제목 리스트
+            force_template: B7 패치 (v1.3.0) — 안티봇 hash 충돌 시 호출자가 강제
 
         Returns:
-            str: X 발행용 메시지 (280자 이내)
+            str: X 발행용 메시지 (X_MAX_LENGTH=275자 이내)
         """
-        if not _is_dry_run():
-            ai_msg = self._generate_ai_tweet(level, score, reasoning, top_news_titles)
-            if ai_msg:
-                return ai_msg
+        if force_template or _is_dry_run():
+            return self._format_x_template(level, score, reasoning, top_news_titles)
+
+        ai_msg = self._generate_ai_tweet(level, score, reasoning, top_news_titles)
+        if ai_msg:
+            return ai_msg
 
         return self._format_x_template(level, score, reasoning, top_news_titles)
 
@@ -171,8 +175,11 @@ class AlertFormatter:
         # 제목: reasoning 요약 (100자 제한)
         reason_short = reasoning[:100].split("\n")[0]
 
-        # 제목: 상위 뉴스 제목 1건
-        top_news = top_news_titles[0][:60] + "..." if top_news_titles else ""
+        # 제목: 상위 뉴스 제목 1건 (B6 패치 v1.3.0: 다양성 — 상위 3개 중 랜덤)
+        top_news = ""
+        if top_news_titles:
+            pool = top_news_titles[:3]
+            top_news = _random.choice(pool)[:60] + "..."
 
         # B3 패치 (v1.2.0): _X_HASHTAG_POOL 활용 — 안티봇 정책
         hashtags = _random.choice(_X_HASHTAG_POOL)
@@ -209,7 +216,7 @@ class AlertFormatter:
           1. GEMINI_API_KEY 존재 확인
           2. google-genai SDK로 Gemini 호출
           3. 응답 텍스트 추출
-          4. 검증 1: 200자 이내
+          4. 검증 1: 240자 이내 (X_MAX_LENGTH=275자, 5자 여유)
           5. 검증 2: 비한국어 문자 가드
           6. 성공 시 트윗 반환, 실패 시 None
 
@@ -238,7 +245,11 @@ class AlertFormatter:
                 "L3": "모니터링 수준. 관찰 권장.",
             }.get(level, "주의 수준.")
 
-            top_news_str = top_news_titles[0][:80] if top_news_titles else "없음"
+            top_news_str = "없음"
+            if top_news_titles:
+                # B6 패치 (v1.3.0): 다양성 — 상위 3개 중 랜덤 선택
+                pool = top_news_titles[:3]
+                top_news_str = _random.choice(pool)[:80]
             hashtags = _random.choice(_X_HASHTAG_POOL)
 
             prompt = (
@@ -249,7 +260,7 @@ class AlertFormatter:
                 f"- 판정 근거: {reasoning[:150]}\n"
                 f"- 주요 뉴스: {top_news_str}\n\n"
                 f"[작성 조건]\n"
-                f"1. 200자 이내 (필수)\n"
+                f"1. 240자 이내 (필수)\n"
                 f"2. 첫 줄: 이모지 + 한 줄 핵심 요약\n"
                 f"3. 중간: 구체적 상황 1~2줄\n"
                 f"4. '⚠️ 투자 참고 정보, 투자 권유 아님' 문구 포함\n"

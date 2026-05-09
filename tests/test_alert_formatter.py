@@ -160,3 +160,45 @@ def test_format_tg_time_phrase_varies_across_calls(formatter: AlertFormatter) ->
     # 20회 중 최소 2종 이상 시간문구 등장 (확률적 검증)
     found = {p for p in _TG_HEADER_TIME_PHRASES if any(p in m for m in msgs)}
     assert len(found) >= 2
+
+
+# ────────────────────────────────────────────────────────
+# v1.3.0 패치 회귀 테스트 (B6 / B7 / B8)
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_format_x_template_picks_random_top_news_from_top3(
+    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B6 신규 (v1.3.0): _format_x_template은 상위 3개 중 랜덤 선택"""
+    monkeypatch.setenv("DRY_RUN", "true")
+    titles = ["AAA breaking news", "BBB second item", "CCC third item", "DDD fourth"]
+    msgs = [formatter.format_x("L2", 5.5, "test", titles) for _ in range(20)]
+    found = {p for p in ("AAA", "BBB", "CCC") if any(p in m for m in msgs)}
+    assert len(found) >= 2  # 20회 중 최소 2개 등장 (확률적)
+    assert not any("DDD" in m for m in msgs)  # 4번째는 절대 등장 안 함
+
+
+@pytest.mark.unit
+def test_format_x_force_template_skips_ai(
+    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B7 신규 (v1.3.0): force_template=True면 DRY_RUN=false에서도 AI 호출 안 함"""
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake_key")  # AI 시도 환경 강제
+    # force_template=True → AI 우회 → 템플릿 결정론적 호출
+    msg = formatter.format_x("L2", 5.5, "test", ["news A"], force_template=True)
+    # 템플릿 prefix 'L2' 메타 헤더 포함
+    assert "Score 5.5" in msg
+
+
+@pytest.mark.unit
+def test_format_x_force_template_default_false(
+    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B7 신규 (v1.3.0): force_template default False → 기존 동작 유지"""
+    monkeypatch.setenv("DRY_RUN", "true")  # 어차피 템플릿 경로
+    msg1 = formatter.format_x("L2", 5.5, "test", ["news A"])
+    msg2 = formatter.format_x("L2", 5.5, "test", ["news A"], force_template=False)
+    # 두 호출 모두 템플릿 → 길이 비슷 (해시태그 셔플로 완전 동일은 아님)
+    assert "Score 5.5" in msg1
+    assert "Score 5.5" in msg2

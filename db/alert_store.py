@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 from core.logger import get_logger
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -423,3 +423,41 @@ class AlertStore:
         except Exception as e:
             logger.error(f"[AlertStore] topic summary 마킹 실패: {e}")
             return False
+
+    def get_recent_top_news_titles(self, n: int = 5) -> list[str]:
+        """
+        제목: 최근 n건 alert의 top_news[0].title 조회 (B7 패치 v1.1.0)
+        내용: 안티봇 hash 비교용. NONE/SYSTEM_DEGRADED 제외, 실제 발행된 alert만.
+
+        Args:
+            n: 조회할 최근 건수 (기본 5)
+
+        Returns:
+            list[str]: 최근 alert의 top_news 첫 항목 title 리스트.
+                      조회 실패 시 빈 리스트.
+        """
+        try:
+            client = self._get_client()
+            result = (
+                client.table(TABLE_ALERT_HISTORY)  # type: ignore[union-attr]
+                .select("top_news,created_at")
+                .not_.in_("level", ["NONE", "SYSTEM_DEGRADED"])
+                .order("created_at", desc=True)
+                .limit(n)
+                .execute()
+            )
+            titles: list[str] = []
+            for row in result.data or []:
+                top_news = row.get("top_news") or []
+                if top_news and isinstance(top_news, list):
+                    first = top_news[0]
+                    if isinstance(first, dict):
+                        title = first.get("title") or ""
+                        if title:
+                            titles.append(title)
+            return titles
+        except Exception as e:
+            logger.warning(
+                f"[AlertStore] 최근 top_news 조회 실패 (B7 비활성 fallback): {e}"
+            )
+            return []

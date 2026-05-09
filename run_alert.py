@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import random as _random
+import re as _re
 import sys
 import time as _time
 
@@ -24,7 +25,25 @@ from publishers.alert_formatter import AlertFormatter
 from publishers.telegram_publisher import TelegramPublisher
 from publishers.x_publisher import XPublisher
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+
+
+# B7 패치 (v1.2.0): top_news 정규화 hash 헬퍼
+# 동일 뉴스를 다른 source가 보도하거나 약간 다른 표현으로 재게시할 때
+# 안티봇 hash 충돌이 회피되지 않는 문제를 방지하기 위해 정규화 후 비교.
+_NORMALIZE_PATTERN = _re.compile(r"[^a-z0-9가-힣]+")
+
+
+def _normalize_for_hash(text: str) -> str:
+    """
+    제목: top_news 제목 정규화
+    내용: 소문자화, 비문자/숫자 제거, 앞 60자 추출. 안티봇 hash 비교용.
+    """
+    if not text:
+        return ""
+    lowered = text.lower()
+    cleaned = _NORMALIZE_PATTERN.sub("", lowered)
+    return cleaned[:60]
 
 
 def _log_preflight_warnings() -> None:
@@ -131,6 +150,29 @@ def main() -> None:
         logger.debug(f"[run_alert] 채널 간 jitter sleep {delay:.2f}s")
         _time.sleep(delay)
 
+    # B7 패치 (v1.2.0): 최근 발행과 top_news[0] 정규화 hash 충돌 검사
+    # 충돌 시 AI 호출 회피 → 템플릿(다른 해시태그)로 강제 fallback.
+    # 안티봇: 동일 input 뉴스가 연속 발화하면 Gemini 출력도 유사해질 위험을 차단.
+    def _detect_topnews_hash_collision() -> bool:
+        """현재 top_news[0]이 최근 5건 alert와 정규화 비교 시 충돌 여부."""
+        if not signal.top_news_titles:
+            return False
+        try:
+            recent = alert_store.get_recent_top_news_titles(n=5)
+        except Exception as e:
+            logger.warning(f"[run_alert] B7 hash 조회 실패 → 비활성 fallback: {e}")
+            return False
+        current = _normalize_for_hash(signal.top_news_titles[0])
+        for title in recent:
+            if _normalize_for_hash(title) == current:
+                logger.info(
+                    f"[run_alert] B7 hash 충돌 감지 → 템플릿 강제 (current='{current[:40]}')"
+                )
+                return True
+        return False
+
+    force_x_template = _detect_topnews_hash_collision() if signal.publish_x else False
+
     # B3 패치 (v1.1.0): 채널별 본문 차별화 — 안티봇 정책
     # AS-IS: tg_msg 한 번 생성 → Free/Paid 동일 본문 발행 = 안티봇 위험
     # TO-BE: 각 분기 안에서 format_tg 별도 호출 → random 셔플로 본문 차별화
@@ -141,6 +183,7 @@ def main() -> None:
             score=signal.score,
             reasoning=signal.reasoning,
             top_news_titles=signal.top_news_titles,
+            force_template=force_x_template,  # B7 패치 (v1.2.0)
         )
         try:
             x_pub.publish(x_msg)
