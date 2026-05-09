@@ -32,7 +32,7 @@ from db.dq_store import DataQualityStore
 from detection.dq_monitor import DataQualityMonitor, DataQualityState
 from detection.reasoning_builder import ReasoningBuilder
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 logger = get_logger(__name__)
 
@@ -149,7 +149,7 @@ class MacroNewsLayer:
         dq_monitor: DataQualityMonitor | None = None,
         reasoning_builder: ReasoningBuilder | None = None,
         dq_store: DataQualityStore | None = None,
-        policy_version: str = "v1.0.0",
+        policy_version: str | None = None,
     ) -> None:
         """
         제목: MacroNewsLayer 초기화
@@ -162,7 +162,7 @@ class MacroNewsLayer:
             dq_monitor: DataQualityMonitor 인스턴스 (None이면 자동 생성)
             reasoning_builder: ReasoningBuilder 인스턴스 (None이면 자동 생성)
             dq_store: DataQualityStore 인스턴스 (None이면 자동 생성, DB 적재용)
-            policy_version: 적용된 정책 버전 (env POLICY_VERSION 또는 'v1.0.0')
+            policy_version: 적용된 정책 버전 (None이면 env POLICY_VERSION → 'v1.0.0')
         """
         self.news_collector = news_collector
         self.youtube_collector = youtube_collector
@@ -173,7 +173,10 @@ class MacroNewsLayer:
         self.dq_monitor = dq_monitor or DataQualityMonitor()
         self.reasoning_builder = reasoning_builder or ReasoningBuilder()
         self.dq_store = dq_store or DataQualityStore()
-        self.policy_version = policy_version
+        # C3-fix (v1.1.1): env POLICY_VERSION 우선, 미설정 시 'v1.0.0' default.
+        # 기존 default 'v1.0.0'이 docstring과 불일치하여 운영 yml에서 env 설정해도
+        # 코드가 안 읽고 default를 사용하던 결함을 정정.
+        self.policy_version = policy_version or _os.getenv("POLICY_VERSION", "v1.0.0")
 
         logger.info(
             f"[MacroNewsLayer] v{VERSION} 초기화 (policy={self.policy_version})"

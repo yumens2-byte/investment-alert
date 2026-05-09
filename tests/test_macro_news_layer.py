@@ -397,3 +397,41 @@ def test_compute_health_score_recency_default_is_5400(monkeypatch: pytest.Monkey
     from detection.macro_news_layer import _get_recency_window_seconds
 
     assert _get_recency_window_seconds() == 5400
+
+
+@pytest.mark.unit
+def test_policy_version_reads_env_when_not_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C3-fix 신규 (v1.1.1): policy_version 미전달 시 env POLICY_VERSION 우선."""
+    monkeypatch.setenv("POLICY_VERSION", "v1.1.0")
+    layer = make_layer()
+    assert layer.policy_version == "v1.1.0"
+
+
+@pytest.mark.unit
+def test_policy_version_default_when_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C3-fix 신규 (v1.1.1): env 미설정 시 default 'v1.0.0' fallback."""
+    monkeypatch.delenv("POLICY_VERSION", raising=False)
+    layer = make_layer()
+    assert layer.policy_version == "v1.0.0"
+
+
+@pytest.mark.unit
+def test_policy_version_explicit_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C3-fix 신규 (v1.1.1): 명시 인자 전달 시 env보다 우선 (테스트성)."""
+    from detection.macro_news_layer import MacroNewsLayer
+
+    monkeypatch.setenv("POLICY_VERSION", "v1.1.0")
+    news_mock = mocker_create()
+    yt_mock = mocker_create()
+    layer = MacroNewsLayer(
+        news_collector=news_mock,
+        youtube_collector=yt_mock,
+        policy_version="v9.9.9",
+    )
+    assert layer.policy_version == "v9.9.9"
+
+
+def mocker_create() -> object:
+    """간이 mock — pytest-mock fixture 미사용 전용."""
+    from unittest.mock import MagicMock
+    return MagicMock()
