@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import sys
 
-from clients.gemini_gateway import GeminiGateway, GeminiGatewayError
 from collectors.news_collector import NewsCollector
 from collectors.youtube_collector import YouTubeCollector
 from core.data_logger import DataLogger
@@ -23,7 +22,7 @@ from publishers.alert_formatter import AlertFormatter
 from publishers.telegram_publisher import TelegramPublisher
 from publishers.x_publisher import XPublisher
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 
 def _log_preflight_warnings() -> None:
@@ -47,13 +46,6 @@ def _log_preflight_warnings() -> None:
 
     if not os.getenv("SUPABASE_URL", "").strip() or not os.getenv("SUPABASE_KEY", "").strip():
         logger.warning("[run_alert] SUPABASE 설정 미완료 — 쿨다운/감사로그 저장이 동작하지 않을 수 있습니다.")
-
-    # v1.1.0: Gemini AI 활성화 사전 점검
-    if not os.getenv("GEMINI_API_KEY", "").strip():
-        logger.warning(
-            "[run_alert] GEMINI_API_KEY 미설정 — AI 점수 산출 비활성, "
-            "키워드 매칭 단독 운영 (영향: 키워드 사전에 없는 뉴스는 평가 누락)"
-        )
 
 
 def main() -> None:
@@ -81,32 +73,15 @@ def main() -> None:
     logger = get_logger(__name__)
     logger.info(f"[run_alert] v{VERSION} 시작 - 로그파일: {_log_file}")
     _log_preflight_warnings()
-
+ 
     # ── Step 1: 의존성 초기화 ────────────────────────────────
     alert_store = AlertStore()
-
-    # v1.1.0: AI 클라이언트 주입 (GEMINI_API_KEY 미설정/SDK 실패 시 keyword fallback)
-    # NewsCollector._apply_ai_scoring()이 ai_client=None이면 즉시 우회하므로
-    # 초기화 실패 시에도 파이프라인은 정상 동작 (graceful degradation)
-    ai_client = None
-    try:
-        ai_client = GeminiGateway()
-        logger.info("[run_alert] Gemini AI 클라이언트 활성화")
-    except GeminiGatewayError as e:
-        logger.warning(f"[run_alert] Gemini 비활성 — keyword_score fallback 모드: {e}")
-    except Exception as e:
-        logger.warning(
-            f"[run_alert] Gemini 초기화 실패 (계속 진행): "
-            f"{type(e).__name__}: {e}"
-        )
-
-    news_collector = NewsCollector(ai_client=ai_client)
+    news_collector = NewsCollector()
     yt_collector = YouTubeCollector()
     macro_layer = MacroNewsLayer(
         news_collector=news_collector,
         youtube_collector=yt_collector,
     )
-    alert_engine = AlertEngine(alert_store=alert_store)
 
     # ── Step 2: 감지 ────────────────────────────────────────
     logger.info("[run_alert] Step 2: Macro-News 감지 시작")
