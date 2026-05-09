@@ -25,7 +25,7 @@ from core.logger import get_logger
 if TYPE_CHECKING:
     pass
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 logger = get_logger(__name__)
 
@@ -117,7 +117,18 @@ class AlertFormatter:
       - X: 280자 이내 단문 (해시태그 포함)
       - TG: HTML 포맷 상세 메시지 (reasoning, top_news 포함)
       - v1.1.0: DRY_RUN=false 시 Gemini AI 자연어 트윗 생성
+      - v1.3.1: 사이클 내 TG 채널 간 시간문구 중복 회피 (B9)
     """
+
+    def __init__(self) -> None:
+        """
+        제목: AlertFormatter 초기화
+        내용: 사이클 내 채널 간 중복 회피용 상태(인스턴스 변수) 초기화.
+              run_alert 실행 1회당 1개 인스턴스 → Free/Paid 호출 사이만 상태 유지.
+        """
+        # B9 패치 (v1.3.1): TG 시간문구 사이클 내 채널 간 중복 회피
+        # Free → Paid 순차 호출 시 동일 phrase 14% 충돌 위험 → set으로 추적
+        self._tg_phrases_used: set[str] = set()
 
     def format_x(
         self,
@@ -331,7 +342,14 @@ class AlertFormatter:
         meta = LEVEL_META.get(level, LEVEL_META["L3"])
         header = meta["tg_header"]
         # B3 패치 (v1.2.0): 매 발행 다른 시간문구 — 안티봇 정책
-        time_phrase = _random.choice(_TG_HEADER_TIME_PHRASES)
+        # B9 패치 (v1.3.1): 사이클 내 채널 간 중복 회피
+        # Free → Paid 순차 호출 시 동일 phrase 회피. 7개 풀 모두 소진 시 자동 리셋.
+        available = [p for p in _TG_HEADER_TIME_PHRASES if p not in self._tg_phrases_used]
+        if not available:
+            self._tg_phrases_used.clear()
+            available = list(_TG_HEADER_TIME_PHRASES)
+        time_phrase = _random.choice(available)
+        self._tg_phrases_used.add(time_phrase)
 
         lines: list[str] = [
             header,

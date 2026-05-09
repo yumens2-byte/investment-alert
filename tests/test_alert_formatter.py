@@ -202,3 +202,57 @@ def test_format_x_force_template_default_false(
     # 두 호출 모두 템플릿 → 길이 비슷 (해시태그 셔플로 완전 동일은 아님)
     assert "Score 5.5" in msg1
     assert "Score 5.5" in msg2
+
+
+# ────────────────────────────────────────────────────────
+# v1.3.1 패치 회귀 테스트 (B9 — 사이클 내 채널 간 중복 회피)
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_format_tg_no_duplicate_phrase_within_cycle(formatter: AlertFormatter) -> None:
+    """B9 신규 (v1.3.1): 같은 인스턴스가 7회 이내 연속 호출 시 phrase 중복 없음.
+    Free → Paid → Internal 호출 시 동일 phrase 14% 충돌 위험 차단."""
+    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
+
+    used_phrases = []
+    # 풀 크기(7개)까지 호출 — 모두 다른 phrase가 나와야 함
+    for _i in range(len(_TG_HEADER_TIME_PHRASES)):
+        msg = formatter.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-test")
+        # 메시지에서 어떤 phrase가 사용됐는지 추출
+        for phrase in _TG_HEADER_TIME_PHRASES:
+            if phrase in msg:
+                used_phrases.append(phrase)
+                break
+
+    # 풀 크기만큼 호출했으므로 모두 다른 phrase여야 함
+    assert len(used_phrases) == len(_TG_HEADER_TIME_PHRASES)
+    assert len(set(used_phrases)) == len(_TG_HEADER_TIME_PHRASES), (
+        f"중복 발생: {used_phrases}"
+    )
+
+
+@pytest.mark.unit
+def test_format_tg_phrase_pool_resets_after_exhaustion(formatter: AlertFormatter) -> None:
+    """B9 신규 (v1.3.1): 풀 소진 후 자동 리셋되어 정상 동작 지속."""
+    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
+
+    pool_size = len(_TG_HEADER_TIME_PHRASES)
+    # 풀 크기 +5회 호출 — 리셋 후에도 정상 동작
+    for _i in range(pool_size + 5):
+        msg = formatter.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-test")
+        # 항상 7개 풀 중 하나가 들어있어야 함
+        assert any(p in msg for p in _TG_HEADER_TIME_PHRASES)
+
+
+@pytest.mark.unit
+def test_format_tg_separate_instances_independent_state() -> None:
+    """B9 신규 (v1.3.1): 인스턴스 별로 독립 상태 — 다른 사이클은 영향 없음."""
+    fmt1 = AlertFormatter()
+    fmt2 = AlertFormatter()
+    # 두 인스턴스 모두 빈 상태로 시작
+    assert fmt1._tg_phrases_used == set()
+    assert fmt2._tg_phrases_used == set()
+    # fmt1만 호출
+    fmt1.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-1")
+    # fmt2 상태는 그대로
+    assert len(fmt1._tg_phrases_used) == 1
+    assert fmt2._tg_phrases_used == set()
