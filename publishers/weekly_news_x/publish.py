@@ -44,7 +44,7 @@ import tweepy
 from config.settings import get_env_bool
 from core.logger import get_logger
 
-VERSION = "1.3.0"  # 상세 로그 출력 + STEP_SUMMARY 통합
+VERSION = "1.3.1"  # Python 3.11 f-string backslash 호환성 핫픽스
 
 logger = get_logger(__name__)
 
@@ -76,7 +76,8 @@ def _log_env_diagnostics() -> None:
     logger.info(
         f"  - FORCE_REPUBLISH = {os.environ.get('FORCE_REPUBLISH', '(미설정, default=false)')}"
     )
-    logger.info(f"  - X_SCREEN_NAME = {os.environ.get('X_SCREEN_NAME', '(미설정, default=\"i\")')}")
+    screen_name_val = os.environ.get("X_SCREEN_NAME", "(미설정, default='i')")
+    logger.info(f"  - X_SCREEN_NAME = {screen_name_val}")
     logger.info(f"  - X_API_KEY: {'설정됨' if os.environ.get('X_API_KEY') else '없음'}")
     logger.info(f"  - X_API_SECRET: {'설정됨' if os.environ.get('X_API_SECRET') else '없음'}")
     logger.info(f"  - X_ACCESS_TOKEN: {'설정됨' if os.environ.get('X_ACCESS_TOKEN') else '없음'}")
@@ -281,8 +282,6 @@ def upload_header_image() -> str | None:
         return None
     summary_ctx = latest_md[0].read_text(encoding="utf-8").split("---")[0][:300]
 
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
     today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
     img_path = IMAGE_DIR / f"{today_str}.png"
 
@@ -443,9 +442,10 @@ def post_thread(
         tweet_id = str(response.data["id"])
         posted_ids.append(tweet_id)
         prev_id = tweet_id
+        preview = text[:40].replace(chr(10), " ")
         logger.info(
             f"[publish]   #{i}/{total} 발행 ({tweet_elapsed:.2f}초) "
-            f"tweet_id={tweet_id} | 미리보기: {text[:40].replace(chr(10), ' ')}..."
+            f"tweet_id={tweet_id} | 미리보기: {preview}..."
         )
     logger.info(f"[publish] ✅ 스레드 체이닝 완료 (총 {total}개 tweet_id 확보)")
     return posted_ids
@@ -553,9 +553,9 @@ def main() -> int:
     for i, t in enumerate(tweets, 1):
         c = count_x_chars(t)
         marker = "✅" if c <= TWEET_LIMIT else "❌"
+        preview = t[:40].replace(chr(10), " ")
         logger.info(
-            f"[publish]   {marker} #{i:>2}/{len(tweets)} ({c:>3}/280자): "
-            f"{t[:40].replace(chr(10), ' ')}..."
+            f"[publish]   {marker} #{i:>2}/{len(tweets)} ({c:>3}/280자): {preview}..."
         )
 
     try:
