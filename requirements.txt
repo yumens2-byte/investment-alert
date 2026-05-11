@@ -26,3 +26,6 @@ ruff==0.7.4
 
 # 제미나이
 google-genai>=1.0.0
+
+# 발행 — Claude API (weekly_news_x 모듈용)
+anthropic>=0.40.0
