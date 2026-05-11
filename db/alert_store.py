@@ -29,11 +29,15 @@ TABLE_ALERT_HISTORY = "ia_alert_history"
 TABLE_COOLDOWN_STATE = "ia_cooldown_state"
 
 # 제목: 레벨별 쿨다운 분 (결정 1: B — Supabase 기반)
+# 내용: macro_news는 기존 키, sector는 'sector:' prefix 키 사용 (격리)
 COOLDOWN_MINUTES: dict[str, int] = {
     "L1": 60,
     "L2": 90,
     "L3": 120,
     "SYSTEM_DEGRADED": 30,  # 운영자 과다 알림 방지 (Phase 1 신규)
+    # Sector Flow Alert 전용 — 일 1회 cron이므로 24h/48h 권장
+    "sector:L1": 1440,   # 24h
+    "sector:L2": 2880,   # 48h
 }
 
 # 제목: 주제 해시 쿨다운 (FR-04)
