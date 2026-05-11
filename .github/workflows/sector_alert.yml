@@ -26,7 +26,8 @@ jobs:
   sector_alert:
     name: Sector Flow Detection & Publish
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # v1.2.1: 10 → 15분 — anti-bot 최대 400초 + Yahoo 최악 60초 + retry 13초×2 + TG 90초 여유 확보
+    timeout-minutes: 15
 
     env:
       # 운영 제어 — 기존 alert.yml과 동일 패턴
