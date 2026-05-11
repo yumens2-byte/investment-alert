@@ -1,0 +1,103 @@
+name: Weekly News Publish
+
+# 기존 alert-pipeline 과 별개 group
+concurrency:
+  group: weekly-news-publish
+  cancel-in-progress: false
+
+"on":
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  # sidecar 자동 commit 위해 contents: write 필요
+  contents: write
+
+jobs:
+  publish:
+    name: Publish Thread to X
+    # PR이 'merged' && 'weekly-news-draft' 라벨 보유일 때만 실행
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'weekly-news-draft')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      X_API_KEY: ${{ secrets.X_API_KEY }}
+      X_API_SECRET: ${{ secrets.X_API_SECRET }}
+      X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+      X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+      X_SCREEN_NAME: ${{ secrets.X_SCREEN_NAME }}
+      # Telegram 알림용 (기존 alert.yml과 동일 시크릿 재활용)
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
+      DRY_RUN: 'false'
+
+    steps:
+      - name: Checkout main (merged)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          # commit & push 위해 토큰과 fetch-depth 명시
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 옵션: ATTACH_IMAGE Variable 사용 시 openai 설치
+      - name: Install optional image deps
+        if: ${{ vars.ATTACH_IMAGE == 'true' }}
+        run: pip install openai
+
+      - name: Publish thread to X
+        id: publish
+        env:
+          ATTACH_IMAGE: ${{ vars.ATTACH_IMAGE }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FORCE_REPUBLISH: ${{ vars.FORCE_REPUBLISH }}
+        run: python -m publishers.weekly_news_x.publish
+
+      # sidecar 메타데이터 git commit & push (재발행 방지 영속화)
+      - name: Commit sidecar metadata
+        if: ${{ steps.publish.outputs.sidecar_path != '' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${{ steps.publish.outputs.sidecar_path }}"
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(weekly-news): publish metadata $(date -u +%Y-%m-%d)"
+            git push origin main
+            echo "✅ sidecar committed: ${{ steps.publish.outputs.sidecar_path }}"
+          else
+            echo "ℹ️ no sidecar changes to commit"
+          fi
+
+      # 옵션: Notion에 Published 상태로 적재
+      - name: Sync published thread to Notion (optional)
+        if: ${{ steps.publish.outputs.thread_url != '' }}
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+          THREAD_URL: ${{ steps.publish.outputs.thread_url }}
+          STATUS: Published
+        run: python -m publishers.weekly_news_x.notion_sync
+        continue-on-error: true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Weekly News Publish 결과" >> $GITHUB_STEP_SUMMARY
+          echo "- Thread URL: ${{ steps.publish.outputs.thread_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tweet count: ${{ steps.publish.outputs.tweet_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Sidecar: ${{ steps.publish.outputs.sidecar_path }}" >> $GITHUB_STEP_SUMMARY
