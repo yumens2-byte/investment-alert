@@ -7,10 +7,14 @@ concurrency:
 
 "on":
   schedule:
-    # US 마감 후 2시간 대기 — Yahoo 종가 확정 충분히 확보
-    # KST 08:00 = UTC 23:00 = ET 18:00(EDT) / 17:00(EST)
-    # 평일만 실행
+    # 1차 시도: US 마감 후 2시간 대기 — Yahoo 종가 확정 충분히 확보
+    # KST 08:00 = UTC 23:00 = ET 18:00(EDT) / 17:00(EST) 평일
     - cron: '0 23 * * 1-5'
+    # 2차 시도 (v1.2.0): 1차 실패 시 1시간 뒤 자동 재실행
+    # UNIQUE 멱등성으로 1차 성공해도 안전 (조건부 INSERT)
+    # 평일 cron 1-5 + 1시간 뒤 = days 2-6 (화~토)
+    # 토요일 UTC 00:00 = KST 토 09:00 = ET 금 19:00 (시장 마감 후) — 정상 처리
+    - cron: '0 0 * * 2-6'
   workflow_dispatch:
     inputs:
       dry_run:
