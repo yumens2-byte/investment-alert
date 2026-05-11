@@ -137,17 +137,28 @@ def main() -> int:
       3. messages.create with web_search tool
       4. 텍스트 추출 → save_archive
       5. GITHUB_OUTPUT 에 archive_path, date 기록
+      6. 실패 시 Telegram INTERNAL 알림
 
     Returns:
         int: 0 성공, 1 실패
     """
+    # 지연 import (테스트 mock 용이)
+    from publishers.weekly_news_x.notifier import notify_draft_failure
+
+    today = get_today_kst()
+    weekday = today.strftime("%A")  # 'Saturday' / 'Sunday' 등
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         logger.error("[collect] ANTHROPIC_API_KEY 미설정")
+        notify_draft_failure(
+            stage="missing_api_key",
+            error_msg="ANTHROPIC_API_KEY 환경변수 미설정",
+            weekday=weekday,
+        )
         return 1
 
     client = anthropic.Anthropic(api_key=api_key)
-    today = get_today_kst()
 
     logger.info(f"[collect] v{VERSION} 시작 — date={today.strftime('%Y-%m-%d %A')}")
 
@@ -168,11 +179,21 @@ def main() -> int:
         )
     except Exception as e:
         logger.error(f"[collect] Claude API 호출 실패: {type(e).__name__}: {e}")
+        notify_draft_failure(
+            stage="claude_api",
+            error_msg=f"{type(e).__name__}: {e}",
+            weekday=weekday,
+        )
         return 1
 
     final_text = extract_text_from_response(response)
     if not final_text:
         logger.error("[collect] 응답 텍스트 비어있음")
+        notify_draft_failure(
+            stage="empty_response",
+            error_msg="Claude API 응답 텍스트 비어있음 (max_tokens 부족 또는 tool_use만 반환)",
+            weekday=weekday,
+        )
         return 1
 
     saved = save_archive(final_text, today)
@@ -190,6 +211,7 @@ def main() -> int:
         with open(github_output, "a", encoding="utf-8") as f:
             f.write(f"archive_path={rel_path}\n")
             f.write(f"date={today.strftime('%Y-%m-%d')}\n")
+            f.write(f"weekday={weekday}\n")
 
     return 0
 

@@ -586,6 +586,202 @@ def test_notifier_escapes_html_in_archive_name(
 
 
 # ────────────────────────────────────────────────────────
+# notifier — draft 알림 (notify_draft_created / notify_draft_failure)
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_notifier_draft_created_normal_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """일반 모드(dry_run=False) — 'DRAFT CREATED' 배지 + PR URL 포함"""
+    from publishers.weekly_news_x import notifier
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_INTERNAL_CHANNEL_ID", "ch_id")
+
+    captured: dict = {}
+    fake_pub = MagicMock()
+    fake_pub.publish_internal.side_effect = lambda t: captured.setdefault("t", t) or "id"
+    with patch.object(notifier, "TelegramPublisher", return_value=fake_pub):
+        notifier.notify_draft_created(
+            archive_path="logs/weekly_news/2026/05/2026-05-09-saturday.md",
+            pr_url="https://github.com/user/repo/pull/123",
+            weekday="Saturday",
+            dry_run=False,
+        )
+    text = captured["t"]
+    assert "DRAFT CREATED" in text
+    assert "Saturday" in text
+    assert "logs/weekly_news/" in text
+    assert "https://github.com/user/repo/pull/123" in text
+
+
+@pytest.mark.unit
+def test_notifier_draft_created_dry_run_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dry_run=True — '[DRY-RUN]' 배지 + PR 미생성 안내"""
+    from publishers.weekly_news_x import notifier
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_INTERNAL_CHANNEL_ID", "ch_id")
+
+    captured: dict = {}
+    fake_pub = MagicMock()
+    fake_pub.publish_internal.side_effect = lambda t: captured.setdefault("t", t) or "id"
+    with patch.object(notifier, "TelegramPublisher", return_value=fake_pub):
+        notifier.notify_draft_created(
+            archive_path="logs/weekly_news/2026/05/x.md",
+            pr_url="",
+            weekday="Sunday",
+            dry_run=True,
+        )
+    text = captured["t"]
+    assert "DRY-RUN" in text
+    assert "Sunday" in text
+    assert "PR 미생성" in text
+
+
+@pytest.mark.unit
+def test_notifier_draft_failure_includes_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """notify_draft_failure 메시지에 stage/error/weekday 포함"""
+    from publishers.weekly_news_x import notifier
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_INTERNAL_CHANNEL_ID", "ch_id")
+
+    captured: dict = {}
+    fake_pub = MagicMock()
+    fake_pub.publish_internal.side_effect = lambda t: captured.setdefault("t", t) or "id"
+    with patch.object(notifier, "TelegramPublisher", return_value=fake_pub):
+        notifier.notify_draft_failure(
+            stage="claude_api",
+            error_msg="RateLimitError: rate limit exceeded",
+            weekday="Saturday",
+        )
+    text = captured["t"]
+    assert "DRAFT FAILED" in text
+    assert "Saturday" in text
+    assert "claude_api" in text
+    assert "rate limit" in text
+
+
+@pytest.mark.unit
+def test_notifier_draft_skips_when_secrets_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """시크릿 미설정 시 draft 알림도 graceful skip"""
+    from publishers.weekly_news_x.notifier import notify_draft_created, notify_draft_failure
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_INTERNAL_CHANNEL_ID", raising=False)
+
+    assert notify_draft_created("x.md", "", "Saturday", False) is False
+    assert notify_draft_failure("collect", "err", "Saturday") is False
+
+
+# ────────────────────────────────────────────────────────
+# collect.main — draft 알림 호출
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_collect_main_notifies_on_missing_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """API 키 미설정 시 notify_draft_failure(stage='missing_api_key') 호출"""
+    from publishers.weekly_news_x import collect as col_mod
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with patch(
+        "publishers.weekly_news_x.notifier.notify_draft_failure",
+        return_value=True,
+    ) as mock_fail:
+        result = col_mod.main()
+
+    assert result == 1
+    assert mock_fail.called
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "missing_api_key"
+
+
+@pytest.mark.unit
+def test_collect_main_notifies_on_api_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude API 예외 시 notify_draft_failure(stage='claude_api') 호출"""
+    from publishers.weekly_news_x import collect as col_mod
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    fake_client = MagicMock()
+    fake_client.messages.create.side_effect = RuntimeError("network err")
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    assert mock_fail.called
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "claude_api"
+    assert "network err" in kwargs["error_msg"]
+
+
+@pytest.mark.unit
+def test_collect_main_notifies_on_empty_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """응답 텍스트 빈 경우 notify_draft_failure(stage='empty_response') 호출"""
+    from publishers.weekly_news_x import collect as col_mod
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    fake_response = MagicMock()
+    fake_response.content = []
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    assert mock_fail.called
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "empty_response"
+
+
+@pytest.mark.unit
+def test_collect_main_weekday_in_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """정상 플로우 — GITHUB_OUTPUT에 weekday 필드 기록"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    output_file = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "# Sample\n"
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        assert col_mod.main() == 0
+
+    content = output_file.read_text(encoding="utf-8")
+    assert "weekday=" in content
+
+
+# ────────────────────────────────────────────────────────
 # publish — sidecar / 재발행 방지
 # ────────────────────────────────────────────────────────
 @pytest.mark.unit

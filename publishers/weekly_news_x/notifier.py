@@ -1,6 +1,7 @@
 """
 제목: weekly_news_x Telegram 알림 모듈
-내용: 발행 성공/실패 시 운영자 채널(INTERNAL)에 Telegram 알림을 전송한다.
+내용: 발행 성공/실패 및 draft 생성/실패 시 운영자 채널(INTERNAL)에
+      Telegram 알림을 전송한다.
       기존 publishers/telegram_publisher.py 의 TelegramPublisher 클래스를 직접 재활용.
 
       알림은 INTERNAL 채널 전용 — 구독자(FREE/PAID)에게 노출되지 않음.
@@ -11,6 +12,8 @@
   - notify_success(archive_name, thread_url, tweet_count, sidecar_path,
                    force_republished): 발행 성공 알림
   - notify_failure(archive_name, stage, exit_code, error_msg): 발행 실패 알림
+  - notify_draft_created(archive_path, pr_url, weekday, dry_run): draft 생성 알림
+  - notify_draft_failure(stage, error_msg, weekday): draft 실패 알림
   - _send_internal(text): 내부 헬퍼 (TelegramPublisher.publish_internal 호출)
 """
 from __future__ import annotations
@@ -142,5 +145,76 @@ def notify_failure(
         f"🔢 exit code: <code>{exit_code}</code>\n"
         f"📋 error:\n<pre>{_escape(truncated_err)}</pre>\n"
         f"🕒 {now_kst}"
+    )
+    return _send_internal(text)
+
+
+def notify_draft_created(
+    archive_path: str,
+    pr_url: str = "",
+    weekday: str = "Saturday",
+    dry_run: bool = False,
+) -> bool:
+    """
+    제목: draft 생성 완료 알림
+    내용: collect.py 성공 + PR 생성 직후 INTERNAL 채널로 알림.
+
+    Args:
+        archive_path: 생성된 archive .md 경로 (저장소 상대)
+        pr_url: 생성된 PR URL (선택)
+        weekday: 'Saturday' | 'Sunday'
+        dry_run: DRY_RUN 모드 여부 (true면 PR 미생성 안내)
+
+    Returns:
+        bool: 알림 성공 여부
+    """
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M KST")
+    badge = "🧪 DRAFT [DRY-RUN]" if dry_run else "📝 DRAFT CREATED"
+    pr_line = (
+        f"🔗 PR: {_escape(pr_url)}\n" if pr_url else
+        "🔗 PR: (DRY_RUN — PR 미생성)\n" if dry_run else
+        "🔗 PR: (생성 대기 중)\n"
+    )
+
+    text = (
+        f"<b>{badge} · weekly_news_x ({weekday})</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🗂 archive: <code>{_escape(archive_path)}</code>\n"
+        f"{pr_line}"
+        f"🕒 {now_kst}\n"
+        f"\n"
+        f"→ 마스터 검수 후 Merge 시 X 발행 진행."
+    )
+    return _send_internal(text)
+
+
+def notify_draft_failure(
+    stage: str,
+    error_msg: str = "",
+    weekday: str = "Saturday",
+) -> bool:
+    """
+    제목: draft 생성 실패 알림
+    내용: collect 단계 실패 시 INTERNAL 채널로 알림. PR 생성 자체가 안 됨.
+
+    Args:
+        stage: 실패 단계 ('collect', 'comic_voice' 등)
+        error_msg: 추가 오류 정보
+        weekday: 'Saturday' | 'Sunday'
+
+    Returns:
+        bool: 알림 성공 여부
+    """
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M KST")
+    truncated_err = error_msg[:800] if error_msg else "(no error message)"
+
+    text = (
+        f"<b>❌ DRAFT FAILED · weekly_news_x ({weekday})</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"⚙️ stage: <b>{_escape(stage)}</b>\n"
+        f"📋 error:\n<pre>{_escape(truncated_err)}</pre>\n"
+        f"🕒 {now_kst}\n"
+        f"\n"
+        f"→ PR 생성 안 됨. Actions 로그 확인 필요."
     )
     return _send_internal(text)
