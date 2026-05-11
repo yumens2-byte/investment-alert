@@ -9,7 +9,12 @@ concurrency:
   schedule:
     # KST 일요일 09:00 = UTC 일요일 00:00
     - cron: '0 0 * * 0'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'DRY_RUN 모드 (true=PR 미생성/검증만, false=정상)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,6 +28,9 @@ jobs:
 
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
 
     steps:
       - name: Checkout
@@ -43,15 +51,14 @@ jobs:
         id: collect
         run: python -m publishers.weekly_news_x.collect
 
-      # 옵션: APPEND_COMIC_VOICE Variable 등록 시에만 실제 동작
       - name: Append comic character voice (optional)
         env:
           APPEND_COMIC_VOICE: ${{ vars.APPEND_COMIC_VOICE }}
         run: python -m publishers.weekly_news_x.comic_voice
         continue-on-error: true
 
-      # 옵션: NOTION_TOKEN/DB_ID 시크릿 등록 시에만 실제 동작
       - name: Sync draft to Notion (optional)
+        if: env.DRY_RUN != 'true'
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
@@ -60,6 +67,8 @@ jobs:
         continue-on-error: true
 
       - name: Create Pull Request
+        id: pr
+        if: env.DRY_RUN != 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: 'draft(weekly-news-sun): ${{ steps.collect.outputs.date }}'
@@ -75,16 +84,34 @@ jobs:
             ---
 
             ⚠️ Merge 전 본문 팩트체크 필수.
-          # 토요일과 충돌 방지 위해 분리된 브랜치 명명
           branch: weekly-news-sun/${{ steps.collect.outputs.date }}
           delete-branch: true
           labels: weekly-news-draft
+
+      - name: Notify draft created (Telegram INTERNAL)
+        if: success() && steps.collect.outputs.archive_path != ''
+        env:
+          DRY_RUN_INPUT: ${{ env.DRY_RUN }}
+          ARCHIVE_PATH_INPUT: ${{ steps.collect.outputs.archive_path }}
+          PR_URL_INPUT: ${{ steps.pr.outputs.pull-request-url }}
+          WEEKDAY_INPUT: ${{ steps.collect.outputs.weekday }}
+        run: |
+          python -c "
+          import os
+          from publishers.weekly_news_x.notifier import notify_draft_created
+          notify_draft_created(
+              archive_path=os.environ.get('ARCHIVE_PATH_INPUT', ''),
+              pr_url=os.environ.get('PR_URL_INPUT', ''),
+              weekday=os.environ.get('WEEKDAY_INPUT', 'Sunday') or 'Sunday',
+              dry_run=(os.environ.get('DRY_RUN_INPUT', 'false').lower() == 'true'),
+          )
+          "
+        continue-on-error: true
 
       - name: Upload log artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          # artifact 이름도 토요일과 분리
           name: weekly-news-draft-sun-${{ github.run_number }}
           path: logs/weekly_news/
           retention-days: 14
