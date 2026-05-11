@@ -517,3 +517,179 @@ Total coverage                    → 88.29% (80% 통과)
 - 평일 4회 cron 실행으로 MIN_ROWS_FOR_5D=24 도달 (약 2026-05-15 목요일까지)
 - 그 시점부터 정상 spread 판정 시작
 - Shadow 2주 완료 → Phase 2 정식 전환 검토
+
+- # Sector Flow Alert v1.2.1 — 마이너 개선 + 트랙 C 점검 결과 반영
+
+> **빌드일**: 2026-05-11
+> **변경 사유**: dry_run 점검 후 발견된 마이너 개선 2건 통합
+> **테스트**: ruff clean + yml OK + sector 54/54 + 회귀 366/366 + coverage 88.29%
+
+---
+
+## v1.2.0 → v1.2.1 변경 내역 (3개 파일)
+
+| 파일 | 변경 내용 | 변경 라인 |
+| --- | --- | --- |
+| `run_sector_alert.py` | VERSION 1.0.0 → 1.0.1, NONE 사유 로그 1줄 추가 | 3줄 |
+| `.github/workflows/sector_alert.yml` | timeout-minutes 10 → 15 (worst case 여유 확보) | 1줄 |
+| `tests/test_run_sector_alert.py` | reasoning 로그 검증 테스트 1건 추가 | 약 50줄 |
+
+---
+
+## 1) NONE 사유 로그 출력 (`run_sector_alert.py` v1.0.1)
+
+### 문제
+
+기존 Step 5 로그:
+```
+[run_sector_alert] 감지 결과: level=NONE, rotation=NONE, 5d_spread=None, 1d_spread=None, rows=6, health=0.20
+```
+→ NONE 사유(5일 가드 발동 / 임계 미달 / 데이터 0건)를 운영자가 즉시 식별 어려움.
+
+### 해결
+
+```python
+# run_sector_alert.py v1.0.1
+logger.info(f"[run_sector_alert] 감지 결과: level={result.level}, ...")
+# v1.0.1: NONE 레벨일 때 사유 명시 (5일 가드 발동/임계 미달 구분)
+if result.level == "NONE":
+    logger.info(f"[run_sector_alert] NONE 사유: {result.reasoning}")
+```
+
+### 효과
+
+| 시나리오 | 새로 출력되는 로그 |
+| --- | --- |
+| 5일 가드 발동 | `NONE 사유: 5일 데이터 누적 중 (rows_used=6 < 24) — 알람 보류` |
+| 임계 미달 | `NONE 사유: NONE — 임계값 미달 또는 데이터 부족 (rows_used=30, health=1.00)` |
+| 데이터 0건 | `NONE 사유: 데이터 0건 — DB 조회 실패 또는 미적재` |
+| 휴장일 (참고: 휴장일은 NONE 도달 전 sys.exit) | 해당 없음 |
+
+운영자가 로그만으로 즉시 원인 진단 가능.
+
+---
+
+## 2) timeout-minutes 10 → 15 (`sector_alert.yml`)
+
+### 문제
+
+트랙 C-5 점검 결과, worst case 시나리오에서 timeout 11초 초과 가능:
+
+| 단계 | worst case 소요 |
+| --- | --- |
+| pip install (캐시 사용) | 30초 |
+| anti-bot random delay | 400초 (max) |
+| Yahoo 수집 (6 ticker × 10초) | 60초 |
+| Supabase upsert + 재시도 | 13초 |
+| Supabase fetch + 재시도 | 13초 |
+| Telegram 3 채널 발행 | 90초 |
+| AlertStore set_cooldown | 5초 |
+| **합계** | **611초** > 600초 (timeout) |
+
+### 해결
+
+```yaml
+# v1.2.1: 10 → 15분 — worst case 여유 확보
+timeout-minutes: 15
+```
+
+### 효과
+
+| 평균 시나리오 | worst case 시나리오 |
+| --- | --- |
+| 약 220-250초 (4분) | 약 611초 (10분 11초) |
+| **여유 720초** (12분) | **여유 289초** (4분 49초) |
+
+평균 운영 영향 없음 (실제 실행 시간은 변하지 않음). 극단 시나리오에서만 buffer 작동.
+
+---
+
+## 트랙 C 점검 결과 종합
+
+직전 메시지에서 8개 항목 점검. 결과:
+
+| # | 점검 항목 | 결과 |
+| --- | --- | --- |
+| C-1 | anti-bot delay (1차+2차 cron 양쪽 적용) | ✓ OK |
+| C-2 | health_score 계산 (가드 통과 후 정상 호출) | ✓ OK |
+| C-3 | sector cooldown 키 등록 | ✓ OK |
+| C-4 | snapshot_date timezone | ✓ OK |
+| C-5 | timeout-minutes=10 충분성 | ⚠️ **v1.2.1로 15분 증가** |
+| C-6 | DRY_RUN env fallback | ✓ OK |
+| C-7 | market_calendar 토요일 처리 | ✓ OK |
+| C-8 | ci_preflight.sh sector 포함 | ✓ OK |
+
+발견된 잠재 이슈 1건은 v1.2.1로 즉시 해결.
+
+---
+
+## 검증 결과
+
+```
+ruff check                       → All checks passed!
+yml syntax                       → OK
+pytest tests/test_sector_*.py    → 54 passed (이전 53 + 신규 1)
+pytest tests/ --cov-fail-under=80 → 366 passed (회귀 0건)
+Total coverage                    → 88.29% (80% 통과)
+```
+
+---
+
+## 적용 순서 (v1.2.0에서 v1.2.1 업그레이드)
+
+3개 파일 덮어쓰기:
+
+| # | 경로 | 액션 |
+| --- | --- | --- |
+| 1 | `run_sector_alert.py` | 덮어쓰기 (VERSION 1.0.0 → 1.0.1) |
+| 2 | `.github/workflows/sector_alert.yml` | 덮어쓰기 (timeout 1줄 변경) |
+| 3 | `tests/test_run_sector_alert.py` | 덮어쓰기 (테스트 1건 추가) |
+
+다른 파일은 v1.2.0 그대로 유지.
+
+---
+
+## 운영 시작 일정 (트랙 A)
+
+오늘 = **2026-05-11 (월)**
+
+### 자동 cron 실행 일정
+
+| 일자 (UTC) | 1차 cron 23:00 UTC | 2차 cron 00:00 UTC (다음날) | 누적 row |
+| --- | --- | --- | --- |
+| 5/11 (월) — 오늘 | **첫 자동 실행 (KST 5/12 08:00)** | 5/12 00:00 UTC (KST 5/12 09:00) | 12 (6 + 6) |
+| 5/12 (화) | KST 5/13 08:00 | KST 5/13 09:00 | 18 |
+| 5/13 (수) | KST 5/14 08:00 | KST 5/14 09:00 | **24 ← 가드 첫 통과** |
+| 5/14 (목) | KST 5/15 08:00 | KST 5/15 09:00 | 30 (완전 5일치) |
+| 5/15 (금) | KST 5/16 08:00 (마지막 평일 cron) | KST 토 09:00 | 36 (cap, 운영 안정) |
+
+**핵심 마일스톤**:
+- **2026-05-14 (목) KST 08:00 — 첫 정상 spread 판정 가능 시점** (24 row 도달)
+- 2026-05-15 (금) — 완전한 5일치 데이터로 안정 운영
+- 2026-05-25 (월) — Shadow 2주 완료, Phase 2 정식 전환 검토 시점
+
+### 모니터링 체크리스트
+
+매일 확인:
+1. GitHub Actions `Sector Flow Alert` 워크플로우 실행 성공 여부
+2. Supabase `ia_sector_flow_daily` row count 증가 (+6/일 정상)
+3. TG Internal 채널 발행 메시지 (Phase 1 Shadow 모드)
+4. logs/ artifact 업로드 확인 (14일 보존)
+
+환경변수 유지:
+- `SECTOR_SHADOW_MODE=true` (Phase 2 정식 전환 전까지)
+- `DRY_RUN=false` (schedule 실행 시 자동)
+
+---
+
+## v1.0.0 → v1.2.1 누적 변경 요약
+
+| 버전 | 핵심 변경 | 적용 효과 |
+| --- | --- | --- |
+| v1.0.0 | 초기 빌드 (18 파일) | Sector Flow Alert 파이프라인 완성 |
+| v1.1.0 | sector_collector requests + yfinance fallback | Yahoo 429 차단 우회 |
+| v1.2.0 | 5일 가드 + Supabase 재시도 + cron 추가 | false alarm 차단 + 일시 장애 자동 복구 |
+| **v1.2.1** | reasoning 로그 + timeout 15분 | 운영자 가독성 + worst case 여유 |
+
+총 **운영 시스템 안정성 4단계 진화** 완료.
+
