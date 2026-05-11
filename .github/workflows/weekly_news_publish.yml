@@ -36,7 +36,7 @@ jobs:
       DRY_RUN: 'false'
 
     steps:
-      - name: Checkout main (merged)
+      - name: 🔄 Checkout main (merged)
         uses: actions/checkout@v4
         with:
           ref: main
@@ -44,23 +44,23 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Set up Python 3.11
+      - name: 🐍 Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       # 옵션: ATTACH_IMAGE Variable 사용 시 openai 설치
-      - name: Install optional image deps
+      - name: 🎨 Install optional image deps
         if: ${{ vars.ATTACH_IMAGE == 'true' }}
         run: pip install openai
 
-      - name: Publish thread to X
+      - name: 🐦 Publish thread to X
         id: publish
         env:
           ATTACH_IMAGE: ${{ vars.ATTACH_IMAGE }}
@@ -69,7 +69,7 @@ jobs:
         run: python -m publishers.weekly_news_x.publish
 
       # sidecar 메타데이터 git commit & push (재발행 방지 영속화)
-      - name: Commit sidecar metadata
+      - name: 💾 Commit sidecar metadata
         if: ${{ steps.publish.outputs.sidecar_path != '' }}
         run: |
           git config user.name "github-actions[bot]"
@@ -84,7 +84,7 @@ jobs:
           fi
 
       # 옵션: Notion에 Published 상태로 적재
-      - name: Sync published thread to Notion (optional)
+      - name: 📚 Sync published thread to Notion (optional)
         if: ${{ steps.publish.outputs.thread_url != '' }}
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -94,7 +94,7 @@ jobs:
         run: python -m publishers.weekly_news_x.notion_sync
         continue-on-error: true
 
-      - name: Summary
+      - name: 📊 Summary
         if: always()
         run: |
           echo "### Weekly News Publish 결과" >> $GITHUB_STEP_SUMMARY
