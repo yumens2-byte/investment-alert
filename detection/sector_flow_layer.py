@@ -3,6 +3,11 @@
 내용: SectorFlowStore에서 최근 5일치 데이터를 읽어 defensive vs cyclical 그룹의
       spread를 계산하고 변화 수준(L1/L2/NONE)을 판정한다.
 
+변경 사유 (v1.0.0 → v1.1.0):
+  - 5일 데이터 충분성 가드 추가 (MIN_ROWS_FOR_5D=24)
+  - rows_used < 24 시 NONE 강제 → DB 누적 전 false alarm 방지
+  - 첫 1주(평일 5회 cron 누적) 동안 자동 NONE 보장
+
 주요 클래스:
   - SectorRotationResult: 감지 결과 dataclass
   - SectorFlowLayer: 변화 감지 엔진
@@ -26,7 +31,7 @@ from config.settings import get_env_float
 from core.logger import get_logger
 from db.sector_flow_store import SectorFlowStore
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -36,6 +41,10 @@ ROTATION_THR_5D = get_env_float("SECTOR_ROTATION_THR_5D", 1.5)  # %p
 
 # 그룹별 최소 ticker 수 (계산 가능 조건)
 MIN_TICKERS_PER_GROUP = 2
+
+# v1.1.0: 5일 누적 spread 계산 가능 최소 row 수 (5일 × 6 ticker × 80% = 24)
+# 이보다 부족하면 1d_spread == 5d_spread 수렴되어 misleading 위험 → NONE 강제
+MIN_ROWS_FOR_5D = 24
 
 
 @dataclass
@@ -113,6 +122,20 @@ class SectorFlowLayer:
                 reason="데이터 0건 — DB 조회 실패 또는 미적재",
                 rows_used=0,
                 health_score=0.0,
+            )
+
+        # Step 2-1 (v1.1.0): 5일 누적 데이터 충분성 가드
+        # 1일치 데이터만 있으면 1d_spread == 5d_spread 수렴 → "5일 누적" 메시지가 misleading.
+        # rows_used가 MIN_ROWS_FOR_5D 미달이면 임계 돌파해도 NONE 강제하여 false alarm 방지.
+        if len(rows) < MIN_ROWS_FOR_5D:
+            health_score = self._compute_health_score(rows, expected_per_day=6)
+            return self._build_none_result(
+                reason=(
+                    f"5일 데이터 누적 중 (rows_used={len(rows)} < "
+                    f"{MIN_ROWS_FOR_5D}) — 알람 보류"
+                ),
+                rows_used=len(rows),
+                health_score=health_score,
             )
 
         # Step 3: pivot (date → ticker → chg_pct)

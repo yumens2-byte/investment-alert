@@ -202,3 +202,58 @@ def test_reasoning_json_structure(_mp) -> None:
     assert "thr_5d" in rj
     assert rj["policy_version"] == "sector-v1.0.0"
     assert "evaluated_at" in rj
+
+
+# ──────────────────────────────────────────────────────────────
+# v1.1.0 신규 — 5일 데이터 충분성 가드 (MIN_ROWS_FOR_5D)
+# ──────────────────────────────────────────────────────────────
+
+@patch("detection.sector_flow_layer.get_market_profile", return_value="extended")
+def test_v1_1_0_min_rows_guard_blocks_l2_when_insufficient(_mp) -> None:
+    """제목: 5일 데이터 누적 전 강한 L2 신호 발생 → NONE 강제 (false alarm 차단)
+
+    핵심 시나리오: 1일치만 누적된 상태에서 |1d_spread| >= 1.5p 발생.
+    v1.0.0이면 5d_spread == 1d_spread → L2 알람.
+    v1.1.0은 rows_used < 24 가드로 NONE 강제.
+    """
+    # 1일치 6 row + 큰 spread (def +2.0, cyc -2.0 → spread 4.0p, 임계 1.5 훨씬 초과)
+    rows = _make_rows(days=1, def_chg=2.0, cyc_chg=-2.0)
+    assert len(rows) == 6  # 1일 × 6 ticker = 6 row (< MIN_ROWS_FOR_5D=24)
+
+    layer = _make_layer_with_rows(rows)
+    result = layer.detect()
+
+    # v1.0.0이면 L2 알람 발생했을 시나리오 → v1.1.0은 NONE 강제
+    assert result.level == "NONE"
+    assert result.rotation_type == "NONE"
+    assert "5일 데이터 누적 중" in result.reasoning
+    assert result.rows_used == 6
+
+
+@patch("detection.sector_flow_layer.get_market_profile", return_value="extended")
+def test_v1_1_0_min_rows_guard_passes_when_sufficient(_mp) -> None:
+    """제목: 5일치 데이터 충족 시 가드 통과 → 정상 L2 판정"""
+    # 5일치 30 row (= MIN_ROWS_FOR_5D 24 초과)
+    rows = _make_rows(days=5, def_chg=0.4, cyc_chg=-0.4)
+    assert len(rows) == 30  # 가드 통과 조건
+
+    layer = _make_layer_with_rows(rows)
+    result = layer.detect()
+
+    # 정상 L2 판정 진행
+    assert result.level == "L2"
+    assert result.rows_used == 30
+
+
+@patch("detection.sector_flow_layer.get_market_profile", return_value="extended")
+def test_v1_1_0_min_rows_guard_partial_accumulation(_mp) -> None:
+    """제목: 3일치 누적 (18 row) — 여전히 NONE 강제 (MIN_ROWS_FOR_5D 미달)"""
+    rows = _make_rows(days=3, def_chg=0.5, cyc_chg=-0.5)
+    assert len(rows) == 18  # 3일 × 6 = 18 < 24
+
+    layer = _make_layer_with_rows(rows)
+    result = layer.detect()
+
+    assert result.level == "NONE"
+    assert "5일 데이터 누적 중" in result.reasoning
+    assert result.rows_used == 18

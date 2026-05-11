@@ -141,3 +141,122 @@ def test_get_client_raises_without_env() -> None:
         raise AssertionError("RuntimeError 미발생")
     except RuntimeError:
         pass
+
+
+# ──────────────────────────────────────────────────────────────
+# v1.1.0 신규 — Supabase 1회 재시도 메커니즘
+# ──────────────────────────────────────────────────────────────
+
+def test_v1_1_0_upsert_retries_once_on_failure() -> None:
+    """제목: upsert 1차 실패 → 3초 대기 후 1회 재시도 → 성공 (True 반환)
+
+    핵심 시나리오: Supabase 일시 장애 발생 시 1회 재시도 메커니즘이
+    메모리 데이터 영구 소실을 막아준다 (가장 큰 위험 시나리오).
+    """
+    from unittest.mock import patch
+
+    store = SectorFlowStore(supabase_url="https://test.supabase.co", supabase_key="key")
+    mock_client = MagicMock()
+
+    # 1차 호출은 예외, 2차 호출은 정상
+    call_count = {"n": 0}
+
+    def _execute_side_effect():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise Exception("temporary connection error")
+        return MagicMock(data=[])
+
+    mock_client.table.return_value.upsert.return_value.execute.side_effect = _execute_side_effect
+    store._client = mock_client  # type: ignore[assignment]
+
+    # time.sleep을 mock으로 대체 (테스트 빠르게)
+    with patch("db.sector_flow_store.time.sleep"):
+        ok = store.upsert_daily_rows(
+            snapshot_date="2026-05-09",
+            market="US",
+            ticker_chg_map={"XLV": -0.45},
+        )
+
+    # 재시도 성공 → True
+    assert ok is True
+    # execute가 정확히 2번 호출됨 (1차 실패 + 2차 성공)
+    assert call_count["n"] == 2
+
+
+def test_v1_1_0_upsert_both_attempts_fail_returns_false() -> None:
+    """제목: 1차 + 2차 모두 실패 시 False 반환 (raise 안 함)"""
+    from unittest.mock import patch
+
+    store = SectorFlowStore(supabase_url="https://test.supabase.co", supabase_key="key")
+    mock_client = MagicMock()
+    mock_client.table.return_value.upsert.return_value.execute.side_effect = Exception(
+        "permanent failure"
+    )
+    store._client = mock_client  # type: ignore[assignment]
+
+    with patch("db.sector_flow_store.time.sleep") as mock_sleep:
+        ok = store.upsert_daily_rows(
+            snapshot_date="2026-05-09",
+            market="US",
+            ticker_chg_map={"XLV": -0.45},
+        )
+
+    # 두 번 시도 후 최종 실패
+    assert ok is False
+    # time.sleep이 1차 실패 후 한 번 호출됨
+    assert mock_sleep.call_count == 1
+    # execute가 정확히 2번 호출됨
+    assert mock_client.table.return_value.upsert.return_value.execute.call_count == 2
+
+
+def test_v1_1_0_fetch_retries_once_on_failure() -> None:
+    """제목: fetch 1차 실패 → 3초 대기 후 1회 재시도 → 성공"""
+    from unittest.mock import patch
+
+    store = SectorFlowStore(supabase_url="https://test.supabase.co", supabase_key="key")
+    mock_client = MagicMock()
+
+    expected_data = [
+        {"snapshot_date": "2026-05-09", "market": "US", "ticker": "XLV",
+         "sector_group": "defensive", "chg_pct": -0.45},
+    ]
+    call_count = {"n": 0}
+
+    def _execute_side_effect():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise Exception("temporary read error")
+        return MagicMock(data=expected_data)
+
+    (
+        mock_client.table.return_value.select.return_value.eq.return_value
+        .order.return_value.limit.return_value.execute.side_effect
+    ) = _execute_side_effect
+    store._client = mock_client  # type: ignore[assignment]
+
+    with patch("db.sector_flow_store.time.sleep"):
+        data = store.fetch_latest_n_days(n=5)
+
+    # 재시도 성공으로 정상 데이터 반환
+    assert data == expected_data
+    assert call_count["n"] == 2
+
+
+def test_v1_1_0_fetch_both_attempts_fail_returns_empty() -> None:
+    """제목: fetch 1차 + 2차 모두 실패 시 빈 리스트 반환 (raise 안 함)"""
+    from unittest.mock import patch
+
+    store = SectorFlowStore(supabase_url="https://test.supabase.co", supabase_key="key")
+    mock_client = MagicMock()
+    mock_client.table.side_effect = Exception("persistent failure")
+    store._client = mock_client  # type: ignore[assignment]
+
+    with patch("db.sector_flow_store.time.sleep") as mock_sleep:
+        data = store.fetch_latest_n_days(n=5)
+
+    assert data == []
+    # time.sleep이 1차 실패 후 한 번 호출됨
+    assert mock_sleep.call_count == 1
+    # table()이 정확히 2번 호출됨
+    assert mock_client.table.call_count == 2
