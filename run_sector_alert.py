@@ -37,7 +37,7 @@ from detection.sector_flow_layer import SectorFlowLayer
 from publishers.sector_formatter import SectorFormatter
 from publishers.telegram_publisher import TelegramPublisher
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 
 def _log_preflight_warnings() -> None:
@@ -146,6 +146,9 @@ def main() -> None:
         f"5d_spread={result.spread_5d}, 1d_spread={result.spread_1d}, "
         f"rows={result.rows_used}, health={result.health_score:.2f}"
     )
+    # v1.0.1: NONE 레벨일 때 사유 명시 (5일 가드 발동/임계 미달 구분)
+    if result.level == "NONE":
+        logger.info(f"[run_sector_alert] NONE 사유: {result.reasoning}")
 
     # Step 6: SectorSignal 생성
     signal = engine.process(result)

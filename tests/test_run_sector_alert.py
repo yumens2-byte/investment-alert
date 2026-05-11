@@ -179,3 +179,56 @@ def test_upsert_failure_continues_to_detect(monkeypatch, env_dry_run_shadow, tmp
 
     # detect는 호출됨 (적재 실패 격리)
     mock_layer.detect.assert_called_once()
+
+
+# ──────────────────────────────────────────────────────────────
+# v1.0.1 신규 — NONE 레벨일 때 reasoning 로그 출력 검증
+# ──────────────────────────────────────────────────────────────
+
+def test_v1_0_1_none_reasoning_log_output(monkeypatch, env_dry_run_shadow, tmp_path, caplog) -> None:
+    """제목: NONE 레벨일 때 reasoning 메시지가 로그에 출력됨
+
+    5일 가드 발동/임계 미달 등 NONE 사유를 운영자가 즉시 식별 가능해야 함.
+    """
+    import logging
+
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level(logging.INFO)
+
+    import run_sector_alert
+    from detection.sector_flow_layer import SectorRotationResult
+
+    expected_reasoning = "5일 데이터 누적 중 (rows_used=6 < 24) — 알람 보류"
+    none_result = SectorRotationResult(
+        level="NONE", rotation_type="NONE",
+        spread_1d=None, spread_5d=None,
+        def_avg_1d=None, cyc_avg_1d=None,
+        def_avg_5d=None, cyc_avg_5d=None,
+        reasoning=expected_reasoning,
+        policy_version="sector-v1.0.0",
+        health_score=0.2, rows_used=6, reasoning_json={},
+    )
+
+    mock_collector = MagicMock()
+    mock_collector.collect_sector_changes.return_value = {
+        t: [{"date": "2026-05-09", "chg_pct": 0.0}] for t in
+        ["XLV", "XLU", "XLP", "XLI", "XLRE", "XLB"]
+    }
+    mock_layer = MagicMock()
+    mock_layer.detect.return_value = none_result
+    mock_store = MagicMock()
+    mock_store.upsert_daily_rows.return_value = True
+
+    with patch.object(run_sector_alert, "get_market_profile", return_value="extended"), \
+         patch.object(run_sector_alert, "SectorCollector", return_value=mock_collector), \
+         patch.object(run_sector_alert, "SectorFlowStore", return_value=mock_store), \
+         patch.object(run_sector_alert, "SectorFlowLayer", return_value=mock_layer), \
+         patch.object(run_sector_alert, "AlertStore"), \
+         patch.object(run_sector_alert, "TelegramPublisher"):
+        with pytest.raises(SystemExit):
+            run_sector_alert.main()
+
+    # reasoning 메시지가 caplog에 기록되어야 함
+    log_messages = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "NONE 사유:" in log_messages
+    assert expected_reasoning in log_messages
