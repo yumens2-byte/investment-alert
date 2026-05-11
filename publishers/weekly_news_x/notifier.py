@@ -59,22 +59,34 @@ def _send_internal(text: str) -> bool:
     """
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     internal_id = os.environ.get("TELEGRAM_INTERNAL_CHANNEL_ID", "")
+
+    # 텍스트 미리보기 (HTML 태그 제외한 plain text의 첫 줄)
+    preview = text.replace("\n", " ").strip()[:60]
+    logger.info(
+        f"[notifier] INTERNAL 채널 발행 시도 "
+        f"(메시지 {len(text)}자, 미리보기: {preview}...)"
+    )
+
     if not (bot_token and internal_id):
         logger.info(
-            "[notifier] TELEGRAM_BOT_TOKEN / TELEGRAM_INTERNAL_CHANNEL_ID 미설정 — skip"
+            "[notifier]   ⏭ TELEGRAM_BOT_TOKEN / TELEGRAM_INTERNAL_CHANNEL_ID 미설정 — skip"
         )
         return False
+    logger.info(
+        f"[notifier]   환경변수 확인 OK "
+        f"(bot_token {len(bot_token)}자, channel_id={internal_id[:8]}...)"
+    )
 
     try:
-        # DRY_RUN 환경 변수는 publish.py 단계에서 이미 분기되므로
-        # 여기는 실발행 컨텍스트로 가정 (dry_run=False 강제 X — 클래스가 환경변수 참조)
         tg = TelegramPublisher()
         message_id = tg.publish_internal(text)
-        logger.info(f"[notifier] TG INTERNAL 알림 발행 message_id={message_id}")
+        logger.info(f"[notifier]   ✅ Telegram INTERNAL 발행 성공 message_id={message_id}")
         return True
     except Exception as e:
-        # 알림 실패가 X 발행 자체를 망가뜨리면 안 됨 → graceful skip
-        logger.warning(f"[notifier] TG INTERNAL 알림 실패: {type(e).__name__}: {e}")
+        logger.warning(
+            f"[notifier]   ⚠️ Telegram INTERNAL 발행 실패 (graceful skip): "
+            f"{type(e).__name__}: {e}"
+        )
         return False
 
 

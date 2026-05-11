@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -43,7 +44,7 @@ import tweepy
 from config.settings import get_env_bool
 from core.logger import get_logger
 
-VERSION = "1.2.0"  # notifier 통합 (Telegram INTERNAL 알림)
+VERSION = "1.3.0"  # 상세 로그 출력 + STEP_SUMMARY 통합
 
 logger = get_logger(__name__)
 
@@ -57,6 +58,55 @@ IMAGE_DIR = ARCHIVE_ROOT / "images"
 TWEET_LIMIT = 280
 SIDECAR_SUFFIX = ".meta.json"
 SIDECAR_VERSION = "1.0.0"
+
+
+def _log_banner(title: str) -> None:
+    """제목: 로그 구획 배너 출력"""
+    logger.info("=" * 60)
+    logger.info(f"  {title}")
+    logger.info("=" * 60)
+
+
+def _log_env_diagnostics() -> None:
+    """제목: publish 환경 진단 정보 출력"""
+    logger.info("[publish] 환경 진단:")
+    logger.info(f"  - ARCHIVE_ROOT = {ARCHIVE_ROOT}")
+    logger.info(f"  - TWEET_LIMIT = {TWEET_LIMIT}자")
+    logger.info(f"  - DRY_RUN = {os.environ.get('DRY_RUN', '(미설정, default=True)')}")
+    logger.info(
+        f"  - FORCE_REPUBLISH = {os.environ.get('FORCE_REPUBLISH', '(미설정, default=false)')}"
+    )
+    logger.info(f"  - X_SCREEN_NAME = {os.environ.get('X_SCREEN_NAME', '(미설정, default=\"i\")')}")
+    logger.info(f"  - X_API_KEY: {'설정됨' if os.environ.get('X_API_KEY') else '없음'}")
+    logger.info(f"  - X_API_SECRET: {'설정됨' if os.environ.get('X_API_SECRET') else '없음'}")
+    logger.info(f"  - X_ACCESS_TOKEN: {'설정됨' if os.environ.get('X_ACCESS_TOKEN') else '없음'}")
+    logger.info(
+        f"  - X_ACCESS_TOKEN_SECRET: "
+        f"{'설정됨' if os.environ.get('X_ACCESS_TOKEN_SECRET') else '없음'}"
+    )
+    logger.info(
+        f"  - TELEGRAM_BOT_TOKEN: "
+        f"{'설정됨' if os.environ.get('TELEGRAM_BOT_TOKEN') else '없음'}"
+    )
+    logger.info(
+        f"  - ATTACH_IMAGE = {os.environ.get('ATTACH_IMAGE', '(미설정)')}"
+    )
+    logger.info(f"  - GITHUB_OUTPUT: {'있음' if os.environ.get('GITHUB_OUTPUT') else '없음'}")
+
+
+def _write_step_summary(content: str) -> None:
+    """
+    제목: GitHub Actions Step Summary에 마크다운 추가
+    내용: GITHUB_STEP_SUMMARY 파일이 있으면 append. 로컬에서는 no-op.
+    """
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    try:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(content + "\n")
+    except OSError as e:
+        logger.warning(f"[publish] STEP_SUMMARY 쓰기 실패: {e}")
 
 
 def find_latest_archive() -> Path:
@@ -375,17 +425,29 @@ def post_thread(
     """
     posted_ids: list[str] = []
     prev_id: str | None = None
+    total = len(tweets)
+    logger.info(f"[publish] 스레드 체이닝 발행 시작 (총 {total}개 청크)")
+    if header_media_id:
+        logger.info(f"[publish]   📷 첫 트윗 헤더 이미지: media_id={header_media_id}")
+
     for i, text in enumerate(tweets, 1):
         kwargs: dict = {"text": text}
         if prev_id is not None:
             kwargs["in_reply_to_tweet_id"] = prev_id
         if i == 1 and header_media_id:
             kwargs["media_ids"] = [header_media_id]
+
+        tweet_start = time.monotonic()
         response = client.create_tweet(**kwargs)
+        tweet_elapsed = time.monotonic() - tweet_start
         tweet_id = str(response.data["id"])
         posted_ids.append(tweet_id)
         prev_id = tweet_id
-        logger.info(f"[publish] #{i}/{len(tweets)} 발행 완료 tweet_id={tweet_id}")
+        logger.info(
+            f"[publish]   #{i}/{total} 발행 ({tweet_elapsed:.2f}초) "
+            f"tweet_id={tweet_id} | 미리보기: {text[:40].replace(chr(10), ' ')}..."
+        )
+    logger.info(f"[publish] ✅ 스레드 체이닝 완료 (총 {total}개 tweet_id 확보)")
     return posted_ids
 
 
@@ -404,93 +466,170 @@ def main() -> int:
             - 발행 성공 시 → notify_success
             - 실패 시 (exit 1/2) → notify_failure with stage 식별자
 
+          상세 로그 (v1.3.0):
+            - 단계별 timing + Step Summary 마크다운 자동 작성
+
     Returns:
         int: 0 성공/skip, 1 입력 오류, 2 길이 초과
     """
     # 지연 import (테스트에서 mock 용이)
     from publishers.weekly_news_x.notifier import notify_failure, notify_success
 
+    started = time.monotonic()
+    _log_banner(f"weekly_news publish v{VERSION} 시작")
+    _log_env_diagnostics()
+
+    # ── Step 1: archive 결정 ──
+    logger.info("[publish] [1/6] archive .md 결정 중...")
     archive_path_env = os.environ.get("ARCHIVE_PATH")
     if archive_path_env:
         md_path = REPO_ROOT / archive_path_env
+        logger.info(f"[publish]   ARCHIVE_PATH 환경변수 사용: {md_path}")
         if not md_path.exists():
-            logger.error(f"[publish] ARCHIVE_PATH 파일 없음: {md_path}")
+            logger.error(f"[publish]   ❌ ARCHIVE_PATH 파일 없음: {md_path}")
             notify_failure(
                 archive_name=archive_path_env,
                 stage="archive_not_found",
                 exit_code=1,
                 error_msg=f"ARCHIVE_PATH 파일 없음: {md_path}",
             )
+            _write_step_summary(
+                f"### ❌ publish 실패: archive_not_found\n- 경로: `{md_path}`"
+            )
             return 1
     else:
+        logger.info("[publish]   ARCHIVE_PATH 미설정 → find_latest_archive() 호출")
         try:
             md_path = find_latest_archive()
+            logger.info(f"[publish]   최신 archive: {md_path}")
         except FileNotFoundError as e:
-            logger.error(f"[publish] {e}")
+            logger.error(f"[publish]   ❌ {e}")
             notify_failure(
                 archive_name="unknown",
                 stage="archive_not_found",
                 exit_code=1,
                 error_msg=str(e),
             )
+            _write_step_summary(
+                f"### ❌ publish 실패: archive_not_found\n- 에러: `{e}`"
+            )
             return 1
 
-    logger.info(f"[publish] v{VERSION} 시작 — source={md_path}")
+    logger.info(f"[publish]   ✅ archive 결정: {md_path.name} ({md_path.stat().st_size} bytes)")
 
-    # ── 재발행 방지 게이트 ──
+    # ── Step 2: 재발행 방지 게이트 ──
+    logger.info("[publish] [2/6] 재발행 방지 게이트 검사 중...")
     force_republish = get_env_bool("FORCE_REPUBLISH", default=False)
+    sc_target = sidecar_path(md_path)
+    logger.info(f"[publish]   sidecar 경로: {sc_target}")
+    logger.info(f"[publish]   FORCE_REPUBLISH = {force_republish}")
+
     if is_already_published(md_path):
         if not force_republish:
-            logger.info(
-                f"[publish] 이미 발행됨 (sidecar 존재) — skip. "
-                f"sidecar={sidecar_path(md_path)}. "
-                "강제 재발행 시 FORCE_REPUBLISH=true 환경변수 설정."
+            logger.info("[publish]   ⏭ 이미 발행됨 (sidecar 존재) — skip (exit 0)")
+            logger.info("[publish]      강제 재발행 시 FORCE_REPUBLISH=true 환경변수 설정 필요")
+            _write_step_summary(
+                f"### ⏭ publish skip: 이미 발행됨\n"
+                f"- archive: `{md_path.name}`\n"
+                f"- sidecar: `{sc_target.name}`\n"
+                "- 재발행 원할 시 `FORCE_REPUBLISH=true` Variable 설정"
             )
-            # skip은 알림 안 함 (소음 방지 — 운영 결정 사항)
             return 0
         logger.warning(
-            f"[publish] FORCE_REPUBLISH=true — 기존 sidecar 보존 후 재발행 진행. "
-            f"archive={md_path}"
+            "[publish]   ⚠️ FORCE_REPUBLISH=true — 기존 sidecar 보존 후 재발행 진행"
         )
+    else:
+        logger.info("[publish]   ✅ sidecar 없음 — 첫 발행")
 
+    # ── Step 3: 청크 분할 + 길이 검증 ──
+    logger.info("[publish] [3/6] 마크다운 파싱 + 글자수 검증 중...")
     md_text = md_path.read_text(encoding="utf-8")
+    logger.info(f"[publish]   archive 본문 길이: {len(md_text):,}자")
+
     tweets = parse_thread(md_text)
-    logger.info(f"[publish] {len(tweets)}개 청크 파싱 완료")
+    logger.info(f"[publish]   ✅ {len(tweets)}개 청크 파싱 완료")
+
+    # 청크별 글자수 사전 표시 (DRY_RUN 아니어도 항상 출력)
+    for i, t in enumerate(tweets, 1):
+        c = count_x_chars(t)
+        marker = "✅" if c <= TWEET_LIMIT else "❌"
+        logger.info(
+            f"[publish]   {marker} #{i:>2}/{len(tweets)} ({c:>3}/280자): "
+            f"{t[:40].replace(chr(10), ' ')}..."
+        )
 
     try:
         validate_tweets(tweets)
     except ValueError as e:
-        logger.error(f"[publish] {e}")
+        logger.error(f"[publish]   ❌ {e}")
         notify_failure(
             archive_name=md_path.name,
             stage="validation",
             exit_code=2,
             error_msg=str(e),
         )
+        _write_step_summary(
+            f"### ❌ publish 실패: validation\n"
+            f"- archive: `{md_path.name}`\n"
+            f"- 에러: `{e}`"
+        )
         return 2
 
+    # ── Step 4: DRY_RUN 분기 ──
     if get_env_bool("DRY_RUN", default=True):
-        logger.info("[publish] DRY_RUN=true — 발행 시뮬레이션만 수행 (sidecar/알림 미작성)")
+        logger.info(
+            "[publish] [4/6] DRY_RUN=true — 발행 시뮬레이션만 수행 (sidecar/알림 미작성)"
+        )
         for i, t in enumerate(tweets, 1):
-            logger.info(f"[publish] [DRY] #{i} ({count_x_chars(t)}자): {t[:60]}...")
+            logger.info(f"[publish]   [DRY] #{i} ({count_x_chars(t)}자): {t[:60]}...")
+        total_elapsed = time.monotonic() - started
+        _write_step_summary(
+            f"### 🧪 publish DRY-RUN\n"
+            f"- archive: `{md_path.name}`\n"
+            f"- 청크 수: {len(tweets)}개 (모두 280자 이내)\n"
+            f"- 총 소요: {total_elapsed:.1f}초\n"
+            "- 실제 발행 안 됨"
+        )
         return 0
 
-    # ── 실발행 단계 (tweepy 예외 발생 가능) ──
+    # ── Step 5: 실발행 ──
+    logger.info("[publish] [4/6] X 클라이언트 인증 + 헤더 이미지 (옵션)")
+    publish_start = time.monotonic()
     try:
         client = get_x_client()
+        logger.info("[publish]   ✅ tweepy.Client 인증 완료")
         header_media_id = upload_header_image()
+        if header_media_id:
+            logger.info(f"[publish]   ✅ 헤더 이미지 업로드 media_id={header_media_id}")
+        else:
+            logger.info("[publish]   ℹ️ 헤더 이미지 미사용 (ATTACH_IMAGE 미설정 또는 옵션 모듈 부재)")
+
+        logger.info("[publish] [5/6] X 스레드 발행 중...")
         posted_ids = post_thread(client, tweets, header_media_id=header_media_id)
     except Exception as e:
-        logger.error(f"[publish] X 발행 실패: {type(e).__name__}: {e}")
+        publish_elapsed = time.monotonic() - publish_start
+        logger.error(
+            f"[publish]   ❌ X 발행 실패 (소요 {publish_elapsed:.1f}초): "
+            f"{type(e).__name__}: {e}"
+        )
         notify_failure(
             archive_name=md_path.name,
             stage="tweepy_publish",
             exit_code=1,
             error_msg=f"{type(e).__name__}: {e}",
         )
+        _write_step_summary(
+            f"### ❌ publish 실패: tweepy_publish\n"
+            f"- archive: `{md_path.name}`\n"
+            f"- 소요시간: {publish_elapsed:.1f}초\n"
+            f"- 에러: `{type(e).__name__}: {e}`"
+        )
         return 1
+    publish_elapsed = time.monotonic() - publish_start
+    logger.info(f"[publish]   ✅ X 발행 완료 (소요 {publish_elapsed:.1f}초, {len(posted_ids)}개 트윗)")
 
-    # ── sidecar 작성 ──
+    # ── Step 6: sidecar 작성 ──
+    logger.info("[publish] [6/6] sidecar 메타데이터 작성 중...")
     screen_name = os.environ.get("X_SCREEN_NAME", "i")
     try:
         sc_path = write_sidecar(
@@ -499,17 +638,23 @@ def main() -> int:
             screen_name=screen_name,
             force_republished=force_republish,
         )
+        logger.info(f"[publish]   ✅ sidecar 작성: {sc_path.name}")
     except Exception as e:
-        # sidecar 작성 실패해도 X 발행은 이미 완료된 상태 → 운영 알림 후 정상 종료
-        logger.error(f"[publish] sidecar 작성 실패: {type(e).__name__}: {e}")
+        logger.error(f"[publish]   ❌ sidecar 작성 실패 (X 발행은 성공): {type(e).__name__}: {e}")
         notify_failure(
             archive_name=md_path.name,
             stage="sidecar_write",
-            exit_code=0,  # X 발행 자체는 성공이므로 0
+            exit_code=0,
             error_msg=(
                 f"{type(e).__name__}: {e}\n"
                 f"⚠️ X 발행은 완료됨. 첫 트윗 ID={posted_ids[0] if posted_ids else 'N/A'}"
             ),
+        )
+        _write_step_summary(
+            f"### ⚠️ publish 부분 성공\n"
+            f"- X 발행: ✅ 완료 ({len(posted_ids)}개)\n"
+            f"- sidecar 작성: ❌ 실패 → 재발행 방지 작동 안 함\n"
+            f"- 첫 tweet_id: {posted_ids[0] if posted_ids else 'N/A'}"
         )
         return 0
 
@@ -520,6 +665,7 @@ def main() -> int:
     except ValueError:
         sc_rel = sc_path
 
+    logger.info(f"[publish] 🔗 Thread URL: {first_url}")
     notify_success(
         archive_name=md_path.name,
         thread_url=first_url,
@@ -527,6 +673,7 @@ def main() -> int:
         sidecar_path=str(sc_rel),
         force_republished=force_republish,
     )
+    logger.info("[publish]   📨 Telegram INTERNAL 알림 발송 완료")
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output and posted_ids:
@@ -534,8 +681,24 @@ def main() -> int:
             f.write(f"thread_url={first_url}\n")
             f.write(f"tweet_count={len(posted_ids)}\n")
             f.write(f"sidecar_path={sc_rel}\n")
-        logger.info(f"[publish] thread_url={first_url}")
+        logger.info("[publish]   📝 GITHUB_OUTPUT 기록 완료")
 
+    total_elapsed = time.monotonic() - started
+    badge = "🔁 RE-PUBLISHED" if force_republish else "✅ PUBLISHED"
+    _write_step_summary(
+        f"### {badge} weekly_news_x\n"
+        f"| 항목 | 값 |\n"
+        f"|---|---|\n"
+        f"| Archive | `{md_path.name}` |\n"
+        f"| 트윗 수 | {len(posted_ids)} |\n"
+        f"| Thread URL | {first_url} |\n"
+        f"| Sidecar | `{sc_rel}` |\n"
+        f"| 발행 소요 | {publish_elapsed:.1f}초 |\n"
+        f"| 총 소요 | {total_elapsed:.1f}초 |\n"
+        f"| 강제 재발행 | {force_republish} |\n"
+    )
+
+    _log_banner(f"weekly_news publish 완료 (총 {total_elapsed:.1f}초)")
     return 0
 
 

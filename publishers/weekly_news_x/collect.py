@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -26,7 +27,7 @@ import anthropic
 
 from core.logger import get_logger
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"  # 상세 로그 출력 추가
 
 logger = get_logger(__name__)
 
@@ -40,6 +41,46 @@ WEB_SEARCH_MAX_USES = 8
 _HERE = Path(__file__).resolve().parent
 PROMPT_PATH = _HERE / "prompts" / "us_news_summary.md"
 ARCHIVE_ROOT = _HERE.parent.parent / "logs" / "weekly_news"
+
+
+def _log_banner(title: str) -> None:
+    """제목: 로그 구획 배너 출력"""
+    logger.info("=" * 60)
+    logger.info(f"  {title}")
+    logger.info("=" * 60)
+
+
+def _log_env_diagnostics() -> None:
+    """제목: 환경 진단 정보 출력 (시크릿 유무, 모델, 한도 등)"""
+    logger.info("[collect] 환경 진단:")
+    logger.info(f"  - MODEL = {MODEL}")
+    logger.info(f"  - MAX_TOKENS = {MAX_TOKENS}")
+    logger.info(f"  - WEB_SEARCH_MAX_USES = {WEB_SEARCH_MAX_USES}")
+    logger.info(f"  - ARCHIVE_ROOT = {ARCHIVE_ROOT}")
+    logger.info(f"  - ANTHROPIC_API_KEY: {'설정됨' if os.environ.get('ANTHROPIC_API_KEY') else '없음'}")
+    logger.info(f"  - TELEGRAM_BOT_TOKEN: {'설정됨' if os.environ.get('TELEGRAM_BOT_TOKEN') else '없음'}")
+    logger.info(
+        f"  - TELEGRAM_INTERNAL_CHANNEL_ID: "
+        f"{'설정됨' if os.environ.get('TELEGRAM_INTERNAL_CHANNEL_ID') else '없음'}"
+    )
+    logger.info(f"  - GITHUB_OUTPUT: {'있음' if os.environ.get('GITHUB_OUTPUT') else '없음'}")
+    logger.info(f"  - GITHUB_STEP_SUMMARY: {'있음' if os.environ.get('GITHUB_STEP_SUMMARY') else '없음'}")
+
+
+def _write_step_summary(content: str) -> None:
+    """
+    제목: GitHub Actions Step Summary에 마크다운 추가
+    내용: GITHUB_STEP_SUMMARY 파일이 있으면 append. 로컬에서는 no-op.
+    """
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    try:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(content + "\n")
+    except OSError as e:
+        logger.warning(f"[collect] STEP_SUMMARY 쓰기 실패: {e}")
+
 
 
 def load_prompt() -> str:
@@ -138,6 +179,7 @@ def main() -> int:
       4. 텍스트 추출 → save_archive
       5. GITHUB_OUTPUT 에 archive_path, date 기록
       6. 실패 시 Telegram INTERNAL 알림
+      7. STEP_SUMMARY 마크다운 작성 (GitHub Actions UI 표시용)
 
     Returns:
         int: 0 성공, 1 실패
@@ -145,74 +187,157 @@ def main() -> int:
     # 지연 import (테스트 mock 용이)
     from publishers.weekly_news_x.notifier import notify_draft_failure
 
+    started = time.monotonic()
     today = get_today_kst()
-    weekday = today.strftime("%A")  # 'Saturday' / 'Sunday' 등
+    weekday = today.strftime("%A")
 
+    _log_banner(f"weekly_news collect v{VERSION} 시작")
+    logger.info(f"[collect] KST 기준 today = {today.strftime('%Y-%m-%d %A %H:%M:%S %Z')}")
+    _log_env_diagnostics()
+
+    # ── Step 1: API 키 검증 ──
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        logger.error("[collect] ANTHROPIC_API_KEY 미설정")
+        logger.error("[collect] ❌ ANTHROPIC_API_KEY 미설정 → 종료 (exit 1)")
         notify_draft_failure(
             stage="missing_api_key",
             error_msg="ANTHROPIC_API_KEY 환경변수 미설정",
             weekday=weekday,
         )
+        _write_step_summary("### ❌ collect 실패: ANTHROPIC_API_KEY 미설정")
         return 1
+    logger.info(f"[collect] ✅ API 키 확인 (길이 {len(api_key)}자, prefix {api_key[:8]}...)")
 
+    # ── Step 2: Anthropic Client 생성 ──
+    logger.info("[collect] [1/4] Anthropic Client 생성 중...")
     client = anthropic.Anthropic(api_key=api_key)
+    logger.info(f"[collect]   ✅ Client 준비 완료 (model={MODEL})")
 
-    logger.info(f"[collect] v{VERSION} 시작 — date={today.strftime('%Y-%m-%d %A')}")
+    # ── Step 3: 프롬프트 로드 ──
+    logger.info("[collect] [2/4] 시스템 프롬프트 로드 중...")
+    system_prompt = load_prompt()
+    user_msg = build_user_message(today)
+    logger.info(f"[collect]   ✅ system 프롬프트 {len(system_prompt)}자, user 메시지 {len(user_msg)}자")
 
+    # ── Step 4: Claude API 호출 (web_search 포함) ──
+    logger.info(f"[collect] [3/4] Claude API 호출 중 (web_search max_uses={WEB_SEARCH_MAX_USES})...")
+    api_start = time.monotonic()
     try:
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=load_prompt(),
+            system=system_prompt,
             tools=[{
                 "type": "web_search_20250305",
                 "name": "web_search",
                 "max_uses": WEB_SEARCH_MAX_USES,
             }],
-            messages=[{
-                "role": "user",
-                "content": build_user_message(today),
-            }],
+            messages=[{"role": "user", "content": user_msg}],
         )
     except Exception as e:
-        logger.error(f"[collect] Claude API 호출 실패: {type(e).__name__}: {e}")
+        api_elapsed = time.monotonic() - api_start
+        logger.error(
+            f"[collect]   ❌ Claude API 호출 실패 (소요 {api_elapsed:.1f}초): "
+            f"{type(e).__name__}: {e}"
+        )
         notify_draft_failure(
             stage="claude_api",
             error_msg=f"{type(e).__name__}: {e}",
             weekday=weekday,
         )
+        _write_step_summary(
+            f"### ❌ collect 실패: Claude API 오류\n"
+            f"- 소요시간: {api_elapsed:.1f}초\n"
+            f"- 에러: `{type(e).__name__}: {e}`"
+        )
         return 1
 
+    api_elapsed = time.monotonic() - api_start
+    logger.info(f"[collect]   ✅ Claude API 응답 수신 (소요 {api_elapsed:.1f}초)")
+
+    # 응답 블록 분석
+    block_types: dict[str, int] = {}
+    for block in response.content:
+        block_types[block.type] = block_types.get(block.type, 0) + 1
+    logger.info(f"[collect]   📦 응답 블록 분포: {block_types}")
+
+    # 토큰 사용량 (response.usage 필드)
+    try:
+        usage = response.usage
+        logger.info(
+            f"[collect]   🔢 토큰: input={usage.input_tokens} / "
+            f"output={usage.output_tokens}"
+        )
+        if hasattr(usage, "server_tool_use") and usage.server_tool_use:
+            sw = getattr(usage.server_tool_use, "web_search_requests", 0)
+            logger.info(f"[collect]   🔍 web_search 실제 사용: {sw}회")
+    except AttributeError:
+        logger.warning("[collect]   ⚠️ 토큰 사용량 정보 없음 (response.usage 미지원)")
+        usage = None
+
+    # ── Step 5: 텍스트 추출 ──
     final_text = extract_text_from_response(response)
     if not final_text:
-        logger.error("[collect] 응답 텍스트 비어있음")
+        logger.error("[collect]   ❌ 응답 텍스트 비어있음 → 종료 (exit 1)")
         notify_draft_failure(
             stage="empty_response",
             error_msg="Claude API 응답 텍스트 비어있음 (max_tokens 부족 또는 tool_use만 반환)",
             weekday=weekday,
         )
+        _write_step_summary(
+            "### ❌ collect 실패: 응답 텍스트 비어있음\n"
+            f"- 블록 분포: `{block_types}`\n"
+            "- max_tokens 한도 또는 tool_use만 반환된 경우"
+        )
         return 1
 
-    saved = save_archive(final_text, today)
-    logger.info(f"[collect] 저장 완료: {saved}")
+    logger.info(f"[collect]   ✅ 텍스트 추출 완료 ({len(final_text)}자)")
 
-    # GitHub Actions output 으로 후속 step에 경로 전달
+    # 마크다운 청크 사전 분석 (publish 단계에서 어떻게 split 될지 미리 표시)
+    chunk_count = len([c for c in final_text.split("\n---\n") if c.strip()])
+    logger.info(f"[collect]   🧵 예상 스레드 청크 수: {chunk_count}개")
+
+    # ── Step 6: archive 저장 ──
+    logger.info("[collect] [4/4] archive 저장 중...")
+    saved = save_archive(final_text, today)
+    logger.info(f"[collect]   ✅ 저장 완료: {saved}")
+
+    # ── GitHub Actions output 기록 ──
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         repo_root = _HERE.parent.parent
         try:
             rel_path = saved.relative_to(repo_root)
         except ValueError:
-            # archive 가 repo 외부일 때 (테스트 monkeypatch 등) 절대 경로 fallback
             rel_path = saved
         with open(github_output, "a", encoding="utf-8") as f:
             f.write(f"archive_path={rel_path}\n")
             f.write(f"date={today.strftime('%Y-%m-%d')}\n")
             f.write(f"weekday={weekday}\n")
+        logger.info(f"[collect]   📝 GITHUB_OUTPUT 기록: archive_path={rel_path}")
 
+    total_elapsed = time.monotonic() - started
+
+    # ── STEP_SUMMARY 마크다운 작성 ──
+    in_tok = usage.input_tokens if usage else "?"
+    out_tok = usage.output_tokens if usage else "?"
+    summary_md = (
+        f"### ✅ Weekly News Collect 성공\n"
+        f"| 항목 | 값 |\n"
+        f"|---|---|\n"
+        f"| 일자 | `{today.strftime('%Y-%m-%d %A')}` |\n"
+        f"| Archive | `{saved.name}` |\n"
+        f"| 텍스트 길이 | {len(final_text):,}자 |\n"
+        f"| 예상 트윗 청크 | {chunk_count}개 |\n"
+        f"| 입력 토큰 | {in_tok} |\n"
+        f"| 출력 토큰 | {out_tok} |\n"
+        f"| API 응답 시간 | {api_elapsed:.1f}초 |\n"
+        f"| 총 소요 | {total_elapsed:.1f}초 |\n"
+        f"| 블록 분포 | `{block_types}` |\n"
+    )
+    _write_step_summary(summary_md)
+
+    _log_banner(f"weekly_news collect 완료 (총 {total_elapsed:.1f}초)")
     return 0
 
 
