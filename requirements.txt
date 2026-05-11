@@ -29,3 +29,6 @@ ruff==0.7.4
 
 # 제미나이
 google-genai>=1.0.0
+
+#야후
+yfinance>=0.2.40
