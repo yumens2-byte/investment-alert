@@ -76,7 +76,8 @@ def _log_env_diagnostics() -> None:
     logger.info(
         f"  - FORCE_REPUBLISH = {os.environ.get('FORCE_REPUBLISH', '(미설정, default=false)')}"
     )
-    logger.info(f"  - X_SCREEN_NAME = {os.environ.get('X_SCREEN_NAME', '(미설정, default=\"i\")')}")
+    screen_name_val = os.environ.get("X_SCREEN_NAME", "(미설정, default='i')")
+    logger.info(f"  - X_SCREEN_NAME = {screen_name_val}")
     logger.info(f"  - X_API_KEY: {'설정됨' if os.environ.get('X_API_KEY') else '없음'}")
     logger.info(f"  - X_API_SECRET: {'설정됨' if os.environ.get('X_API_SECRET') else '없음'}")
     logger.info(f"  - X_ACCESS_TOKEN: {'설정됨' if os.environ.get('X_ACCESS_TOKEN') else '없음'}")
