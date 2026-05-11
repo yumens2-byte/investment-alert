@@ -60,7 +60,7 @@ jobs:
       - name: Anti-bot random delay (schedule only)
         if: github.event_name == 'schedule'
         run: |
-          DELAY=$((RANDOM % 200))
+          DELAY=$((RANDOM % 400))
           echo "⏱️ Random delay: ${DELAY}s ($((DELAY/60))m $((DELAY%60))s)"
           sleep $DELAY
 
