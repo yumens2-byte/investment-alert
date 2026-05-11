@@ -39,6 +39,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 # 공통지침 11: known-first-party 필수 설정
+# (weekly_news_x는 publishers 하위 패키지라 별도 등록 불필요)
 known-first-party = [
     "publishers",
     "db",
