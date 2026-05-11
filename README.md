@@ -292,3 +292,228 @@ coverage (신규 6 모듈 평균):    96%
 1. `.github/workflows/sector_alert.yml`에서 cron 주석 처리 (즉시 자동 실행 중단)
 2. 필요시 Supabase에서 `003_add_sector_flow_daily.sql` 하단 ROLLBACK 섹션 실행
 3. 코드 파일 9개 제거 + 수정 파일 2개를 이전 버전으로 복원
+
+
+# Sector Flow Alert v1.2.0 — 5일 가드 + Supabase 재시도 + cron 추가
+
+> **빌드일**: 2026-05-11
+> **변경 사유**: dry_run 정상 동작 검증 후 발견된 잠재 이슈 3건 종합 해결
+> **테스트**: 파일럿 1회차 5/5 + 파일럿 2회차 5/5 + 전수 53/53 + 회귀 365/365 + coverage 88%
+
+---
+
+## v1.1.0 → v1.2.0 변경 내역 (5개 파일)
+
+| 파일 | 변경 내용 | 변경 라인 |
+| --- | --- | --- |
+| `detection/sector_flow_layer.py` | 5일 데이터 충분성 가드 추가 (MIN_ROWS_FOR_5D=24) | 약 18줄 |
+| `db/sector_flow_store.py` | upsert/fetch에 1회 재시도 메커니즘 추가 | 약 60줄 (재구조화 포함) |
+| `.github/workflows/sector_alert.yml` | 두 번째 cron 추가 (1시간 뒤 자동 재실행) | 1줄 |
+| `tests/test_sector_flow_layer.py` | 5일 가드 테스트 3건 추가 | 약 60줄 |
+| `tests/test_sector_flow_store.py` | 재시도 테스트 4건 추가 | 약 110줄 |
+
+다른 13개 파일은 v1.1.0과 동일 — 재적용 불필요.
+
+---
+
+## 1) 5일 데이터 충분성 가드 (sector_flow_layer.py)
+
+### 문제
+
+dry_run에서 발견: 1일치 데이터만 누적된 상태에서 `1d_spread == 5d_spread`로 수렴. 만약 1일치 spread만으로 임계 돌파 시 "5일 누적 spread"라는 misleading한 메시지로 알람이 발행될 수 있음.
+
+### 해결
+
+```python
+# detection/sector_flow_layer.py v1.1.0
+MIN_ROWS_FOR_5D = 24  # 5일 × 6 ticker × 80%
+
+def detect(self) -> SectorRotationResult:
+    # ... Step 2: 5일치 row 조회 ...
+    rows = self.store.fetch_latest_n_days(n=5)
+
+    # Step 2-1 (v1.1.0): 5일 누적 데이터 충분성 가드
+    if len(rows) < MIN_ROWS_FOR_5D:
+        return self._build_none_result(
+            reason=f"5일 데이터 누적 중 (rows_used={len(rows)} < {MIN_ROWS_FOR_5D}) — 알람 보류",
+            rows_used=len(rows),
+            health_score=health_score,
+        )
+```
+
+### 효과
+
+| 시점 | rows_used | v1.0.0 (이전) | v1.1.0 (v1.2.0 포함) |
+| --- | --- | --- | --- |
+| Day 1 (오늘) | 6 | 큰 1d_spread → L2 알람 발생 가능 | NONE 강제 |
+| Day 2 | 12 | 동일 | NONE 강제 |
+| Day 3 | 18 | 동일 | NONE 강제 |
+| Day 4 | 24 | 동일 | **가드 통과**, 정상 판정 |
+| Day 5 | 30 | 정상 | 정상 |
+
+평일 4회 cron 누적 후 정상 알람 시작. 첫 1주 자동 안전 모드.
+
+---
+
+## 2) Supabase 재시도 메커니즘 (sector_flow_store.py)
+
+### 문제
+
+기존 v1.0.0:
+- `upsert_daily_rows`: 1회 시도 후 실패 시 `False` 반환 → **메모리 데이터 영구 소실** (가장 큰 위험)
+- `fetch_latest_n_days`: 1회 시도 후 빈 리스트 → 알람 누락 위험
+
+### 해결
+
+```python
+# db/sector_flow_store.py v1.1.0
+_RETRY_MAX = 1        # 1회 재시도
+_RETRY_WAIT_SEC = 3   # 3초 대기 (timeout-minutes=10 내 안전)
+
+# 재시도 루프
+for attempt in range(_RETRY_MAX + 1):
+    try:
+        # ... Supabase 호출 ...
+        return True
+    except Exception as e:
+        if attempt < _RETRY_MAX:
+            logger.warning(f"... attempt={attempt+1}/{_RETRY_MAX+1} ... 3초 후 재시도")
+            time.sleep(_RETRY_WAIT_SEC)
+            continue
+return False  # 최종 실패
+```
+
+### 위험 시나리오 보호
+
+| 시나리오 | v1.0.0 | v1.2.0 |
+| --- | --- | --- |
+| Supabase 일시 장애 (3초 이내 회복) | 데이터 소실 | 재시도 성공 → 정상 적재 |
+| Supabase 장기 장애 (3초 후도 실패) | False 반환 | False 반환 (동일) |
+| 정상 호출 | 1회 호출 | 1회 호출 (재시도 발동 안 함) |
+| 최대 추가 지연 | 0초 | 3초 (재시도 1회) |
+
+---
+
+## 3) GitHub Actions cron 추가 (sector_alert.yml)
+
+### 문제
+
+기존: `0 23 * * 1-5` 평일 1일 1회만 — 그날 실행 실패 시 24시간 데이터 공백.
+
+### 해결
+
+```yaml
+schedule:
+  - cron: '0 23 * * 1-5'   # 1차: 평일 23:00 UTC (KST 08:00)
+  - cron: '0 0 * * 2-6'    # 2차: 1시간 뒤 자동 재실행 (UNIQUE 멱등성)
+```
+
+### 동작 시나리오
+
+| cron 1 (23:00 UTC) | cron 2 (00:00 UTC 다음날) | 효과 |
+| --- | --- | --- |
+| ✅ 성공 | ✅ 성공 → UNIQUE 충돌 → UPDATE (멱등) | 안전 |
+| ❌ 실패 | ✅ 성공 | **1시간 뒤 자동 복구** |
+| ✅ 성공 | ❌ 실패 | 1차 데이터 보존, 영향 없음 |
+| ❌ 실패 | ❌ 실패 | 마스터에게 워크플로우 알림 |
+
+토요일 00:00 UTC = KST 토 09:00 = 미국 EST 금 19:00 (시장 마감 후) — 정상 처리. 휴장일 가드는 `run_sector_alert.py` Step 1이 자동 처리.
+
+---
+
+## 적용 순서 (v1.1.0에서 v1.2.0 업그레이드)
+
+5개 파일 덮어쓰기:
+
+| # | 경로 | 액션 |
+| --- | --- | --- |
+| 1 | `detection/sector_flow_layer.py` | **덮어쓰기** (v1.0.0 → v1.1.0) |
+| 2 | `db/sector_flow_store.py` | **덮어쓰기** (v1.0.0 → v1.1.0) |
+| 3 | `.github/workflows/sector_alert.yml` | **덮어쓰기** (cron 1줄 추가) |
+| 4 | `tests/test_sector_flow_layer.py` | **덮어쓰기** (12건으로 확장) |
+| 5 | `tests/test_sector_flow_store.py` | **덮어쓰기** (12건으로 확장) |
+
+나머지 13개 파일은 v1.1.0 그대로 유지.
+
+---
+
+## 검증 결과
+
+### 파일럿 1회차 — 5일 가드 동작 (5건)
+
+| 검증 | 결과 |
+| --- | --- |
+| MIN_ROWS_FOR_5D 상수값 (=24) | ✓ |
+| 1일치 + 큰 spread → NONE 강제 (dry_run 재현) | ✓ |
+| 5일치 30 row → 정상 L2 판정 | ✓ |
+| 3일치 18 row → NONE 유지 + reasoning에 누적 중 표시 | ✓ |
+| 경계값 24 row 정확히 → 가드 통과 | ✓ |
+
+### 파일럿 2회차 — Supabase 재시도 (5건)
+
+| 검증 | 결과 |
+| --- | --- |
+| 재시도 상수 (_RETRY_MAX=1, _RETRY_WAIT_SEC=3) | ✓ |
+| upsert 1차 실패 → 2차 성공 → True (sleep 3초) | ✓ |
+| upsert 둘 다 실패 → False (raise 안 함) | ✓ |
+| fetch 1차 실패 → 2차 성공 → 데이터 반환 | ✓ |
+| 정상 호출 — 재시도 발동 안 함 (sleep 0회) | ✓ |
+
+### 전수 1회차 — sector 신규 모듈 (53건)
+
+```
+pytest tests/test_sector_*.py tests/test_run_sector_alert.py --no-cov
+→ 53 passed in 6.45s
+```
+
+| 테스트 파일 | v1.1.0 | v1.2.0 |
+| --- | --- | --- |
+| test_sector_collector.py | 12 | 12 |
+| test_sector_flow_store.py | 8 | **12** (+4 재시도) |
+| test_sector_flow_layer.py | 9 | **12** (+3 가드) |
+| test_sector_alert_engine.py | 7 | 7 |
+| test_sector_formatter.py | 6 | 6 |
+| test_run_sector_alert.py | 4 | 4 |
+| **합계** | **46** | **53** |
+
+### 전수 2회차 — 전체 회귀 + coverage
+
+```
+ruff check                       → All checks passed!
+yml syntax                       → OK
+pytest tests/ --cov-fail-under=80 → 365 passed (회귀 0건)
+Total coverage                    → 88.29% (80% 통과)
+```
+
+---
+
+## 운영 효과 예측
+
+### 시나리오 A — 매일 정상 (가장 빈번)
+- 23:00 UTC 1차 cron 성공
+- 00:00 UTC 2차 cron — UNIQUE 충돌 → UPDATE (멱등, 데이터 동일)
+- 결과: 정상 동작, 추가 알람 없음
+
+### 시나리오 B — 1차 실패 + 2차 성공
+- 23:00 UTC Yahoo 일시 차단
+- 00:00 UTC 1시간 뒤 재시도 → 정상 데이터 적재
+- 결과: 데이터 공백 없음
+
+### 시나리오 C — 둘 다 실패
+- 23:00 UTC + 00:00 UTC 모두 Yahoo 차단
+- 그날 데이터 누락 → 5일 가드가 알람 발행 차단
+- 결과: 다음날 cron 정상 시 데이터 복구 (Yahoo 5일 history)
+
+### 시나리오 D — Supabase 일시 장애
+- Yahoo 수집 정상
+- Supabase upsert 1차 실패 → 3초 대기 → 2차 성공
+- 결과: 데이터 보존, 5초 추가 지연만
+
+---
+
+## 향후 일정
+
+- 마스터 v1.2.0 적용 (5개 파일 덮어쓰기) → 즉시 자동 cron 적용
+- 평일 4회 cron 실행으로 MIN_ROWS_FOR_5D=24 도달 (약 2026-05-15 목요일까지)
+- 그 시점부터 정상 spread 판정 시작
+- Shadow 2주 완료 → Phase 2 정식 전환 검토
