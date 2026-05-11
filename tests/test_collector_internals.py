@@ -339,8 +339,9 @@ def test_collect_channel_http_status_404_log_includes_rss_url(mocker, caplog) ->
 
 
 def test_collect_channel_rss_fail_then_api_fallback_returns_events(mocker) -> None:
-    from collectors.youtube_collector import YouTubeCollector
     from datetime import UTC, datetime
+
+    from collectors.youtube_collector import YouTubeCollector
 
     collector = YouTubeCollector(channels_str="A:UC123")
     collector.youtube_api_key = "test-key"
