@@ -27,7 +27,7 @@ import anthropic
 
 from core.logger import get_logger
 
-VERSION = "1.1.0"  # 상세 로그 출력 추가
+VERSION = "1.2.0"  # 응답 형식 사후 검증 추가 (invalid_format stage)
 
 logger = get_logger(__name__)
 
@@ -296,6 +296,49 @@ def main() -> int:
     # 마크다운 청크 사전 분석 (publish 단계에서 어떻게 split 될지 미리 표시)
     chunk_count = len([c for c in final_text.split("\n---\n") if c.strip()])
     logger.info(f"[collect]   🧵 예상 스레드 청크 수: {chunk_count}개")
+
+    # ── 응답 형식 사후 검증 (v1.1.0 신규) ──
+    # 기대: 헤더 + 6 뉴스 + 시사점 = 8 청크, '---' 구분자 7개
+    # 너무 적으면 마크다운 형식이 깨졌거나 메타-질문 응답일 가능성
+    MIN_CHUNK_COUNT = 5
+    META_PATTERNS = [
+        "사용자님", "마스터님", "어떻게 진행", "어떤 방식",
+        "옵션 1", "옵션 2", "옵션1", "옵션2",
+        "찾기 어려운", "확보되지 않았", "충족하기 어려운",
+        "두 가지 옵션", "제안드립니다", "진행할까요",
+    ]
+    detected_meta = [p for p in META_PATTERNS if p in final_text]
+
+    if chunk_count < MIN_CHUNK_COUNT or detected_meta:
+        reason_parts = []
+        if chunk_count < MIN_CHUNK_COUNT:
+            reason_parts.append(f"청크 부족 ({chunk_count} < {MIN_CHUNK_COUNT})")
+        if detected_meta:
+            reason_parts.append(f"메타-질문 패턴 감지: {detected_meta[:3]}")
+        reason = " / ".join(reason_parts)
+
+        logger.error(f"[collect]   ❌ 응답 형식 검증 실패 — {reason}")
+        logger.error(f"[collect]      응답 미리보기 (앞 300자): {final_text[:300]!r}")
+        notify_draft_failure(
+            stage="invalid_format",
+            error_msg=(
+                f"응답이 X 스레드 마크다운 형식 위반.\n"
+                f"검증 실패 사유: {reason}\n"
+                f"응답 미리보기: {final_text[:200]}..."
+            ),
+            weekday=weekday,
+        )
+        _write_step_summary(
+            f"### ❌ collect 실패: invalid_format\n"
+            f"- 사유: {reason}\n"
+            f"- 청크 수: {chunk_count}개 (기대 ≥ {MIN_CHUNK_COUNT})\n"
+            f"- 메타 패턴: {detected_meta if detected_meta else '없음'}\n"
+            f"- archive 저장 안 함 (PR 생성 차단)\n"
+            f"- 응답 미리보기:\n```\n{final_text[:400]}\n```"
+        )
+        return 1
+
+    logger.info(f"[collect]   ✅ 형식 검증 통과 (청크 {chunk_count}개, 메타 패턴 0건)")
 
     # ── Step 6: archive 저장 ──
     logger.info("[collect] [4/4] archive 저장 중...")

@@ -109,8 +109,15 @@ def main() -> int:
           THREAD_URL/STATUS 환경변수가 있으면 그 값을 사용.
 
     Returns:
-        int: 0 성공/skip, 1 실패
+        int: 0 성공/skip(시크릿 미설정 = 의도된 옵션 비활성), 1 실제 실패
     """
+    # 시크릿 미설정은 "옵션 모듈 비활성" — 정상 skip (exit 0)
+    if not (os.environ.get("NOTION_TOKEN") and os.environ.get("NOTION_DB_ID")):
+        logger.info(
+            "[notion_sync] NOTION_TOKEN/NOTION_DB_ID 미설정 — skip (옵션 모듈 비활성, exit 0)"
+        )
+        return 0
+
     candidates = sorted(ARCHIVE_ROOT.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
         logger.error("[notion_sync] archive .md 없음")

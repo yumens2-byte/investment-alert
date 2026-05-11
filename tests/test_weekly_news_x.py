@@ -754,11 +754,162 @@ def test_collect_main_notifies_on_empty_response(
     assert kwargs["stage"] == "empty_response"
 
 
+# ────────────────────────────────────────────────────────
+# collect.main — 응답 형식 사후 검증 (v1.2.0 신규)
+# ────────────────────────────────────────────────────────
+def _make_valid_thread_markdown() -> str:
+    """제목: 정상 X 스레드 마크다운 8청크 생성 (테스트 fixture)"""
+    return (
+        "**🧵 [5/11 미국 주요뉴스 브리핑]**\n\n"
+        "오늘의 핵심: A · B · C · D · E\n\n"
+        "---\n\n"
+        "**1/ 📊 첫 번째 뉴스**\n본문 1\n#tag1\n\n"
+        "---\n\n"
+        "**2/ 🔥 두 번째 뉴스**\n본문 2\n#tag2\n\n"
+        "---\n\n"
+        "**3/ 💾 세 번째 뉴스**\n본문 3\n#tag3\n\n"
+        "---\n\n"
+        "**4/ 🛢️ 네 번째 뉴스**\n본문 4\n#tag4\n\n"
+        "---\n\n"
+        "**5/ 🐉 다섯 번째 뉴스**\n본문 5\n#tag5\n\n"
+        "---\n\n"
+        "**6/ 🦅 여섯 번째 뉴스**\n본문 6\n#tag6\n\n"
+        "---\n\n"
+        "**📌 투자자 주목 포인트**\n주목 포인트\n#NVDA\n"
+    )
+
+
+@pytest.mark.unit
+def test_collect_main_rejects_meta_question_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """메타-질문 응답 감지 시 stage='invalid_format'로 실패 (archive 저장 안 함)"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = (
+        "사용자님, 검색한 결과를 확인한 결과 부족합니다.\n"
+        "옵션 1: 24시간 확대\n"
+        "옵션 2: 3건만 정리\n"
+        "어떤 방식으로 진행할까요?"
+    )
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    assert mock_fail.called
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "invalid_format"
+    # archive 저장 안 됨
+    assert list(tmp_path.rglob("*.md")) == []
+
+
+@pytest.mark.unit
+def test_collect_main_rejects_too_few_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """청크 수 부족 시 invalid_format 실패"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "단 1개 청크만 있음 — 8청크 마크다운 아님"  # '---' 없음
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "invalid_format"
+
+
+@pytest.mark.unit
+def test_collect_main_accepts_valid_8chunk_markdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """정상 8청크 마크다운은 검증 통과 + archive 저장"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = _make_valid_thread_markdown()
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        result = col_mod.main()
+
+    assert result == 0
+    saved_files = list(tmp_path.rglob("*.md"))
+    assert len(saved_files) == 1
+
+
+@pytest.mark.unit
+def test_collect_main_rejects_partial_meta_pattern(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """청크 수는 충족하지만 메타 패턴 1개라도 포함 시 실패"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    # 8청크 정상 마크다운이지만 끝에 메타-질문 추가됨
+    contaminated = _make_valid_thread_markdown() + "\n\n어떤 방식으로 진행할까요?"
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = contaminated
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "invalid_format"
+
+
 @pytest.mark.unit
 def test_collect_main_weekday_in_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """정상 플로우 — GITHUB_OUTPUT에 weekday 필드 기록"""
+    """정상 플로우 — GITHUB_OUTPUT에 weekday 필드 기록 (v1.2.0: 8청크 마크다운 사용)"""
     from publishers.weekly_news_x import collect as col_mod
 
     monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
@@ -768,7 +919,7 @@ def test_collect_main_weekday_in_output(
 
     text_block = MagicMock()
     text_block.type = "text"
-    text_block.text = "# Sample\n"
+    text_block.text = _make_valid_thread_markdown()
     fake_response = MagicMock()
     fake_response.content = [text_block]
     fake_client = MagicMock()
@@ -1092,7 +1243,7 @@ def test_collect_main_empty_response_returns_1(
 def test_collect_main_success_writes_github_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """정상 플로우 — archive 저장 + GITHUB_OUTPUT 기록"""
+    """정상 플로우 — archive 저장 + GITHUB_OUTPUT 기록 (v1.2.0: 8청크 마크다운 사용)"""
     from publishers.weekly_news_x import collect as col_mod
 
     monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
@@ -1102,7 +1253,11 @@ def test_collect_main_success_writes_github_output(
 
     text_block = MagicMock()
     text_block.type = "text"
-    text_block.text = "# Sample Brief\n"
+    text_block.text = (
+        "**🧵 헤더**\n\n---\n\n"
+        "1\n\n---\n\n2\n\n---\n\n3\n\n---\n\n"
+        "4\n\n---\n\n5\n\n---\n\n6\n\n---\n\n시사점"
+    )
     fake_response = MagicMock()
     fake_response.content = [text_block]
     fake_client = MagicMock()
@@ -1204,11 +1359,25 @@ def test_sync_to_notion_handles_request_exception(
 
 
 @pytest.mark.unit
+def test_notion_sync_main_skip_when_secrets_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NOTION_TOKEN/DB_ID 미설정 시 의도된 skip(exit 0) — 옵션 모듈 비활성"""
+    from publishers.weekly_news_x import notion_sync as ns
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    monkeypatch.delenv("NOTION_DB_ID", raising=False)
+    # archive 비어있어도 시크릿 체크가 먼저이므로 0 반환
+    assert ns.main() == 0
+
+
+@pytest.mark.unit
 def test_notion_sync_main_no_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """archive 비어있으면 1 반환"""
+    """시크릿 있는데 archive 비어있으면 1 반환 (실제 실패)"""
     from publishers.weekly_news_x import notion_sync as ns
+    monkeypatch.setenv("NOTION_TOKEN", "tok")
+    monkeypatch.setenv("NOTION_DB_ID", "dbid")
     monkeypatch.setattr(ns, "ARCHIVE_ROOT", tmp_path)
     assert ns.main() == 1
 
@@ -1217,8 +1386,10 @@ def test_notion_sync_main_no_archive(
 def test_notion_sync_main_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """정상 플로우 — archive 존재 + sync 성공"""
+    """정상 플로우 — 시크릿 + archive 존재 + sync 성공"""
     from publishers.weekly_news_x import notion_sync as ns
+    monkeypatch.setenv("NOTION_TOKEN", "tok")
+    monkeypatch.setenv("NOTION_DB_ID", "dbid")
     monkeypatch.setattr(ns, "ARCHIVE_ROOT", tmp_path)
     md = tmp_path / "x.md"
     md.write_text("body", encoding="utf-8")
@@ -1232,8 +1403,10 @@ def test_notion_sync_main_success(
 def test_notion_sync_main_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """sync 실패 시 1 반환"""
+    """시크릿 있고 archive 있는데 sync 실패 시 1 반환 (실제 실패)"""
     from publishers.weekly_news_x import notion_sync as ns
+    monkeypatch.setenv("NOTION_TOKEN", "tok")
+    monkeypatch.setenv("NOTION_DB_ID", "dbid")
     monkeypatch.setattr(ns, "ARCHIVE_ROOT", tmp_path)
     md = tmp_path / "x.md"
     md.write_text("body", encoding="utf-8")
