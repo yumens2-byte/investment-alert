@@ -20,7 +20,7 @@
   - find_latest_archive(): logs/weekly_news/ 하위 최신 .md 탐색
   - parse_thread(md_text): '---' 구분 청크 리스트 반환
   - count_x_chars(text): X 공식 글자수 정책 반영 카운트
-  - validate_tweets(tweets): 280자 초과 시 ValueError
+  - validate_tweets(tweets): 380자 초과 시 ValueError (X Premium 정책)
   - get_x_client(): tweepy.Client 인증
   - upload_header_image(): (옵션) DALL-E 헤더 이미지 업로드
   - post_thread(client, tweets, header_media_id): 스레드 체이닝 발행
@@ -44,7 +44,7 @@ import tweepy
 from config.settings import get_env_bool
 from core.logger import get_logger
 
-VERSION = "1.3.1"  # Python 3.11 f-string backslash 호환성 핫픽스
+VERSION = "1.3.2"  # X Premium 380자 정책 반영 (2026-05-17, 마스터 결정)
 
 logger = get_logger(__name__)
 
@@ -55,7 +55,7 @@ _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parent.parent
 ARCHIVE_ROOT = REPO_ROOT / "logs" / "weekly_news"
 IMAGE_DIR = ARCHIVE_ROOT / "images"
-TWEET_LIMIT = 280
+TWEET_LIMIT = 380  # X Premium 25,000자 한도 내 보수적 운영 정책 (2026-05-17, 마스터 결정)
 SIDECAR_SUFFIX = ".meta.json"
 SIDECAR_VERSION = "1.0.0"
 
@@ -203,7 +203,7 @@ def count_x_chars(text: str) -> int:
 def validate_tweets(tweets: list[str]) -> list[str]:
     """
     제목: 트윗 길이 검증
-    내용: 각 청크가 280자 이하인지 검사. 초과 시 ValueError 발생.
+    내용: 각 청크가 TWEET_LIMIT(380자, X Premium 정책) 이하인지 검사. 초과 시 ValueError 발생.
 
     Args:
         tweets: 청크 리스트
@@ -555,7 +555,7 @@ def main() -> int:
         marker = "✅" if c <= TWEET_LIMIT else "❌"
         preview = t[:40].replace(chr(10), " ")
         logger.info(
-            f"[publish]   {marker} #{i:>2}/{len(tweets)} ({c:>3}/280자): {preview}..."
+            f"[publish]   {marker} #{i:>2}/{len(tweets)} ({c:>3}/{TWEET_LIMIT}자): {preview}..."
         )
 
     try:
@@ -586,7 +586,7 @@ def main() -> int:
         _write_step_summary(
             f"### 🧪 publish DRY-RUN\n"
             f"- archive: `{md_path.name}`\n"
-            f"- 청크 수: {len(tweets)}개 (모두 280자 이내)\n"
+            f"- 청크 수: {len(tweets)}개 (모두 {TWEET_LIMIT}자 이내)\n"
             f"- 총 소요: {total_elapsed:.1f}초\n"
             "- 실제 발행 안 됨"
         )
