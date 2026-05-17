@@ -16,6 +16,7 @@
         - TELEGRAM_BOT_TOKEN/INTERNAL_CHANNEL_ID 미설정 시 graceful skip
         - 알림 실패가 X 발행 자체를 막지 않음
 
+
 주요 함수:
   - find_latest_archive(): logs/weekly_news/ 하위 최신 .md 탐색
   - parse_thread(md_text): '---' 구분 청크 리스트 반환
