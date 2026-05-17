@@ -905,6 +905,128 @@ def test_collect_main_rejects_partial_meta_pattern(
     assert kwargs["stage"] == "invalid_format"
 
 
+# ────────────────────────────────────────────────────────
+# collect.main — v1.3.0 X 글자수 사전 검증 (length_exceeded stage)
+# 도입 배경: 2026-05-16 사고 회귀 방지
+# ────────────────────────────────────────────────────────
+def _make_overflow_thread_markdown(overflow_indices: list[int]) -> str:
+    """제목: 특정 인덱스의 청크를 280자 초과로 만든 8청크 마크다운 생성
+
+    Args:
+        overflow_indices: 1~6 중 초과시킬 뉴스 청크 번호 (헤더/시사점은 제외)
+
+    Returns:
+        str: count_x_chars()로 ≥ 280자가 되는 청크를 포함한 마크다운
+    """
+    # 한글 1자 = X 카운트 2자. 한글 150자 → X 300자 → 초과 보장.
+    overflow_body = "가" * 150  # X 카운트 300자 (TWEET_LIMIT 280 초과)
+    normal_body = "본문 정상"
+
+    blocks = [
+        "**🧵 [5/16 미국 주요뉴스 브리핑]**\n\n오늘의 핵심: A · B · C · D · E"
+    ]
+    for i in range(1, 7):
+        body = overflow_body if i in overflow_indices else normal_body
+        blocks.append(f"**{i}/ 📊 뉴스 {i}**\n{body}\n#tag{i}")
+    blocks.append("**📌 투자자 주목 포인트**\n주목 포인트\n#NVDA")
+    return "\n\n---\n\n".join(blocks)
+
+
+@pytest.mark.unit
+def test_collect_main_rejects_length_overflow_single(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """청크 1개가 280자 초과 시 length_exceeded stage로 차단 + archive 미생성"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = _make_overflow_thread_markdown(overflow_indices=[2])
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    assert mock_fail.called
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "length_exceeded"
+    # archive 미저장 확인 (마스터 메모리: "검증 실패 시 archive 저장 안 함")
+    assert list(tmp_path.rglob("*.md")) == []
+
+
+@pytest.mark.unit
+def test_collect_main_rejects_length_overflow_multiple(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """청크 여러개가 280자 초과 시 모두 보고 + length_exceeded stage"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    # 청크 #2, #4 동시 초과 (5/16 사고 재현 시나리오)
+    text_block.text = _make_overflow_thread_markdown(overflow_indices=[2, 4])
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "length_exceeded"
+    # error_msg에 "초과 청크" 키워드 + 2건 정보 포함되어야 함
+    err = kwargs["error_msg"]
+    assert "초과 청크" in err
+    assert err.count("tweet #") >= 2  # 최소 2건 보고
+
+
+@pytest.mark.unit
+def test_collect_main_accepts_within_280_chars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """모든 청크가 280자 이내일 때 X 글자수 검증 통과 + archive 저장"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    # _make_valid_thread_markdown은 모든 청크 짧음 → X 카운트도 < 280
+    text_block.text = _make_valid_thread_markdown()
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        result = col_mod.main()
+
+    assert result == 0
+    saved_files = list(tmp_path.rglob("*.md"))
+    assert len(saved_files) == 1
+
+
 @pytest.mark.unit
 def test_collect_main_weekday_in_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
