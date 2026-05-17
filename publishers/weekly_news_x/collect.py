@@ -27,7 +27,7 @@ import anthropic
 
 from core.logger import get_logger
 
-VERSION = "1.3.0"  # X 글자수 사전 검증 (length_exceeded stage) — 2026-05-17 사고 회귀 방지
+VERSION = "1.3.1"  # X Premium 380자 정책 반영 (publish.py TWEET_LIMIT 추종, 2026-05-17)
 
 logger = get_logger(__name__)
 
@@ -377,7 +377,7 @@ def main() -> int:
         notify_draft_failure(
             stage="length_exceeded",
             error_msg=(
-                f"X 280자 정책 초과 청크 {len(overflow_list)}개:\n{detail}\n"
+                f"X {TWEET_LIMIT}자 정책 초과 청크 {len(overflow_list)}개:\n{detail}\n"
                 "→ archive 저장 안 함 / PR 생성 차단."
             ),
             weekday=weekday,
