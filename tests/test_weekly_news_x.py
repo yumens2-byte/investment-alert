@@ -97,9 +97,9 @@ def test_validate_tweets_pass() -> None:
 
 @pytest.mark.unit
 def test_validate_tweets_fail_on_overflow() -> None:
-    """280자 초과 시 ValueError"""
+    """TWEET_LIMIT 초과 시 ValueError"""
     from publishers.weekly_news_x.publish import validate_tweets
-    over = "가" * 200  # 한글 200자 = X 카운트 400 → 초과
+    over = "가" * 200  # 한글 200자 = X 카운트 400 → TWEET_LIMIT 초과 보장
     with pytest.raises(ValueError, match="Tweet length exceeded"):
         validate_tweets([over])
 
@@ -272,7 +272,7 @@ def test_publish_main_no_archive_found(
 def test_publish_main_validation_failure_returns_2(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """280자 초과 시 2 반환"""
+    """TWEET_LIMIT 초과 시 2 반환"""
     from publishers.weekly_news_x import publish as pub_mod
     monkeypatch.setattr(pub_mod, "ARCHIVE_ROOT", tmp_path)
     md = tmp_path / "over.md"
@@ -908,18 +908,27 @@ def test_collect_main_rejects_partial_meta_pattern(
 # ────────────────────────────────────────────────────────
 # collect.main — v1.3.0 X 글자수 사전 검증 (length_exceeded stage)
 # 도입 배경: 2026-05-16 사고 회귀 방지
+# v1.3.1: X Premium 정책 반영 — TWEET_LIMIT을 publish 모듈에서 동적 참조하여
+#          하드코딩 280/380 제거 (정책 변경 시 테스트 자동 추종)
 # ────────────────────────────────────────────────────────
 def _make_overflow_thread_markdown(overflow_indices: list[int]) -> str:
-    """제목: 특정 인덱스의 청크를 280자 초과로 만든 8청크 마크다운 생성
+    """제목: 특정 인덱스의 청크를 TWEET_LIMIT 초과로 만든 8청크 마크다운 생성
+
+    TWEET_LIMIT은 publish 모듈에서 동적 import — 정책 변경 시 자동 추종.
 
     Args:
         overflow_indices: 1~6 중 초과시킬 뉴스 청크 번호 (헤더/시사점은 제외)
 
     Returns:
-        str: count_x_chars()로 ≥ 280자가 되는 청크를 포함한 마크다운
+        str: count_x_chars()로 > TWEET_LIMIT 가 되는 청크를 포함한 마크다운
     """
-    # 한글 1자 = X 카운트 2자. 한글 150자 → X 300자 → 초과 보장.
-    overflow_body = "가" * 150  # X 카운트 300자 (TWEET_LIMIT 280 초과)
+    from publishers.weekly_news_x.publish import TWEET_LIMIT
+
+    # 한글 1자 = X 카운트 2자. TWEET_LIMIT를 50자 초과하도록 한글 수 동적 계산.
+    # 예: TWEET_LIMIT=280 → 한글 165자 = X 카운트 330자 (초과 50)
+    # 예: TWEET_LIMIT=380 → 한글 215자 = X 카운트 430자 (초과 50)
+    overflow_korean_count = (TWEET_LIMIT + 50) // 2 + 1
+    overflow_body = "가" * overflow_korean_count
     normal_body = "본문 정상"
 
     blocks = [
@@ -936,7 +945,7 @@ def _make_overflow_thread_markdown(overflow_indices: list[int]) -> str:
 def test_collect_main_rejects_length_overflow_single(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """청크 1개가 280자 초과 시 length_exceeded stage로 차단 + archive 미생성"""
+    """청크 1개가 TWEET_LIMIT 초과 시 length_exceeded stage로 차단 + archive 미생성"""
     from publishers.weekly_news_x import collect as col_mod
 
     monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
@@ -969,7 +978,7 @@ def test_collect_main_rejects_length_overflow_single(
 def test_collect_main_rejects_length_overflow_multiple(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """청크 여러개가 280자 초과 시 모두 보고 + length_exceeded stage"""
+    """청크 여러개가 TWEET_LIMIT 초과 시 모두 보고 + length_exceeded stage"""
     from publishers.weekly_news_x import collect as col_mod
 
     monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
@@ -1001,10 +1010,10 @@ def test_collect_main_rejects_length_overflow_multiple(
 
 
 @pytest.mark.unit
-def test_collect_main_accepts_within_280_chars(
+def test_collect_main_accepts_within_tweet_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """모든 청크가 280자 이내일 때 X 글자수 검증 통과 + archive 저장"""
+    """모든 청크가 TWEET_LIMIT 이내일 때 X 글자수 검증 통과 + archive 저장"""
     from publishers.weekly_news_x import collect as col_mod
 
     monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
@@ -1012,7 +1021,7 @@ def test_collect_main_accepts_within_280_chars(
 
     text_block = MagicMock()
     text_block.type = "text"
-    # _make_valid_thread_markdown은 모든 청크 짧음 → X 카운트도 < 280
+    # _make_valid_thread_markdown은 모든 청크 짧음 → X 카운트도 < TWEET_LIMIT
     text_block.text = _make_valid_thread_markdown()
     fake_response = MagicMock()
     fake_response.content = [text_block]
