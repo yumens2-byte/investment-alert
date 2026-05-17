@@ -27,7 +27,7 @@ import anthropic
 
 from core.logger import get_logger
 
-VERSION = "1.2.0"  # 응답 형식 사후 검증 추가 (invalid_format stage)
+VERSION = "1.3.0"  # X 글자수 사전 검증 (length_exceeded stage) — 2026-05-17 사고 회귀 방지
 
 logger = get_logger(__name__)
 
@@ -185,7 +185,13 @@ def main() -> int:
         int: 0 성공, 1 실패
     """
     # 지연 import (테스트 mock 용이)
+    # v1.3.0: publish 모듈에서 parse_thread/count_x_chars/TWEET_LIMIT 재사용 (단일 진실 소스)
     from publishers.weekly_news_x.notifier import notify_draft_failure
+    from publishers.weekly_news_x.publish import (
+        TWEET_LIMIT,
+        count_x_chars,
+        parse_thread,
+    )
 
     started = time.monotonic()
     today = get_today_kst()
@@ -294,7 +300,9 @@ def main() -> int:
     logger.info(f"[collect]   ✅ 텍스트 추출 완료 ({len(final_text)}자)")
 
     # 마크다운 청크 사전 분석 (publish 단계에서 어떻게 split 될지 미리 표시)
-    chunk_count = len([c for c in final_text.split("\n---\n") if c.strip()])
+    # v1.3.0: publish 모듈의 parse_thread()를 그대로 사용 — 단일 진실 소스
+    chunks_pre = parse_thread(final_text)
+    chunk_count = len(chunks_pre)
     logger.info(f"[collect]   🧵 예상 스레드 청크 수: {chunk_count}개")
 
     # ── 응답 형식 사후 검증 (v1.1.0 신규) ──
@@ -339,6 +347,51 @@ def main() -> int:
         return 1
 
     logger.info(f"[collect]   ✅ 형식 검증 통과 (청크 {chunk_count}개, 메타 패턴 0건)")
+
+    # ──────────────────────────────────────────────────────────
+    # Step 5.5: X 글자수 사전 검증 (v1.3.0 신규, 2026-05-17)
+    # ──────────────────────────────────────────────────────────
+    # 도입 배경: 2026-05-16 사고 — Claude 응답 청크 #2=340자, #4=311자 로 publish
+    #            단계 validate_tweets() ValueError → exit 2 미발행.
+    #            본 검증으로 PR 생성 전에 차단하여 마스터 검수 부담 제거.
+    # 동일 함수(parse_thread/count_x_chars/TWEET_LIMIT)를 publish 모듈에서 import하여
+    # publish 단계와 동일 정책 보장.
+    # 롤백: 본 블록 통째로 주석 처리 + VERSION 1.2.0 환원.
+    # ──────────────────────────────────────────────────────────
+    overflow_list: list[tuple[int, int, str]] = []
+    for idx, chunk in enumerate(chunks_pre, start=1):
+        n_chars = count_x_chars(chunk)
+        if n_chars > TWEET_LIMIT:
+            preview = chunk[:80].replace("\n", " ")
+            overflow_list.append((idx, n_chars, preview))
+
+    if overflow_list:
+        detail_lines = [
+            f"  - tweet #{i}: {n}/{TWEET_LIMIT}자 (초과 {n - TWEET_LIMIT}자) — {preview}..."
+            for i, n, preview in overflow_list
+        ]
+        detail = "\n".join(detail_lines)
+        logger.error(
+            f"[collect]   ❌ X 글자수 검증 실패 — {len(overflow_list)}개 청크 초과:\n{detail}"
+        )
+        notify_draft_failure(
+            stage="length_exceeded",
+            error_msg=(
+                f"X 280자 정책 초과 청크 {len(overflow_list)}개:\n{detail}\n"
+                "→ archive 저장 안 함 / PR 생성 차단."
+            ),
+            weekday=weekday,
+        )
+        _write_step_summary(
+            f"### ❌ collect 실패: length_exceeded\n"
+            f"- 초과 청크: {len(overflow_list)}개\n"
+            f"- 상세:\n```\n{detail}\n```\n"
+            f"- archive 저장 안 함 (PR 생성 차단)\n"
+            f"- 재시도: Actions → Weekly News Draft → Re-run failed jobs"
+        )
+        return 1
+
+    logger.info(f"[collect]   ✅ X 글자수 검증 통과 (모든 {chunk_count}개 청크 ≤ {TWEET_LIMIT}자)")
 
     # ── Step 6: archive 저장 ──
     logger.info("[collect] [4/4] archive 저장 중...")
