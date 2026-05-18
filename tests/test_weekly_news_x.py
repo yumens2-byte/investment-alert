@@ -1721,6 +1721,7 @@ def test_generate_header_image_no_api_key(
     assert result is None
 
 
+
 @pytest.mark.unit
 def test_generate_header_image_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
