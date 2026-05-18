@@ -14,7 +14,6 @@
   - save_archive(content, today): logs/weekly_news/YYYY/MM/...md 저장
   - main(): 위 단계 일괄 실행 + GITHUB_OUTPUT 기록
 """
-
 from __future__ import annotations
 
 import os
@@ -29,7 +28,7 @@ import anthropic
 
 from core.logger import get_logger
 
-VERSION = "1.4.0"  # V4 freshness + V5 required keywords validation 추가 (2026-05-18)
+VERSION = "1.4.1"  # 영어 메타 패턴 12개 추가 (2026-05-18 사고 회귀 방지)
 
 logger = get_logger(__name__)
 
@@ -460,15 +459,35 @@ def main() -> int:
     chunk_count = len(chunks_pre)
     logger.info(f"[collect]   🧵 예상 스레드 청크 수: {chunk_count}개")
 
-    # ── 응답 형식 사후 검증 (v1.1.0 신규) ──
+    # ── 응답 형식 사후 검증 (v1.1.0 신규, v1.4.1 영어 패턴 12개 추가) ──
     # 기대: 헤더 + 6 뉴스 + 시사점 = 8 청크, '---' 구분자 7개
     # 너무 적으면 마크다운 형식이 깨졌거나 메타-질문 응답일 가능성
+    # v1.4.1 (2026-05-18): LLM이 본문 앞에 영어 메타발화(예: "Based on my web search results,
+    #   I found sufficient information about...")를 출력하는 사고 발생. 영어 메타 패턴 12개
+    #   추가하여 차단. 사고 본문 시뮬레이션 결과 4개 패턴 매칭 확인 (Based on my, I found,
+    #   web search results, sufficient information).
     MIN_CHUNK_COUNT = 5
     META_PATTERNS = [
+        # 한국어 패턴 (v1.1.0)
         "사용자님", "마스터님", "어떻게 진행", "어떤 방식",
         "옵션 1", "옵션 2", "옵션1", "옵션2",
         "찾기 어려운", "확보되지 않았", "충족하기 어려운",
         "두 가지 옵션", "제안드립니다", "진행할까요",
+        # 영어 패턴 (v1.4.1, 2026-05-18 신규)
+        # ⚠️ 모두 LLM 1인칭 또는 메타 행동 묘사 — 정상 뉴스 본문엔 절대 등장 안 함
+        "Based on my",            # 5/18 실사고 패턴 (매우 높음)
+        "Based on the search",    # 변형 (높음)
+        "Based on web search",    # 변형 (높음)
+        "I found",                # 5/18 사고 부분 (높음)
+        "I searched",             # 동사 변형 (중간)
+        "Here is",                # LLM 응답 시작 (중간) — "Here is the CPI" 같은 정상 인용 가능성
+        "Here are",               # LLM 응답 시작 (중간)
+        "Let me",                 # 메타 행동 묘사 (중간)
+        "web search results",     # 5/18 사고 부분 (높음)
+        "search results show",    # 변형 (중간)
+        "I will provide",         # 미래 의도 (중간)
+        "I'll provide",           # 축약형 (중간)
+        "sufficient information", # 5/18 사고 부분 (중간)
     ]
     detected_meta = [p for p in META_PATTERNS if p in final_text]
 
