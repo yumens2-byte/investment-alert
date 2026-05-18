@@ -918,6 +918,135 @@ def test_collect_main_rejects_partial_meta_pattern(
 
 
 # ────────────────────────────────────────────────────────
+# v1.4.1 신규 — 영어 메타 패턴 검출 (2026-05-18 사고 회귀 방지)
+# 사고: LLM이 본문 앞에 "Based on my web search results, I found sufficient
+#       information about..." 출력 → V1 글자수 검증에서 차단되었으나, 메타 패턴
+#       사전이 한국어만 커버하여 V0에서 못 잡음. 영어 패턴 12개 추가.
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_collect_main_rejects_english_meta_based_on_my(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1.4.1: 5/18 실사고 패턴 재현 — 'Based on my' 차단"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    # 5/18 실사고: 본문 앞에 영어 메타발화
+    contaminated = (
+        "Based on my web search results, I found sufficient information about major US markets.\n\n"
+        + _make_valid_thread_markdown()
+    )
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = contaminated
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "invalid_format"
+
+
+@pytest.mark.unit
+def test_collect_main_rejects_english_meta_here_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1.4.1: 'Here is' 영어 메타 패턴 차단"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    contaminated = "Here is the latest US market summary.\n\n" + _make_valid_thread_markdown()
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = contaminated
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "invalid_format"
+
+
+@pytest.mark.unit
+def test_collect_main_rejects_english_meta_let_me(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1.4.1: 'Let me' 영어 메타 패턴 차단"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    contaminated = "Let me provide the major news for you.\n\n" + _make_valid_thread_markdown()
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = contaminated
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        with patch(
+            "publishers.weekly_news_x.notifier.notify_draft_failure",
+            return_value=True,
+        ) as mock_fail:
+            result = col_mod.main()
+
+    assert result == 1
+    kwargs = mock_fail.call_args.kwargs
+    assert kwargs["stage"] == "invalid_format"
+
+
+@pytest.mark.unit
+def test_collect_main_accepts_normal_korean_text_no_false_positive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v1.4.1: 정상 한국어 본문이 영어 메타 패턴 추가로 오탐되지 않는지 검증"""
+    from publishers.weekly_news_x import collect as col_mod
+
+    monkeypatch.setattr(col_mod, "ARCHIVE_ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    # _make_valid_thread_markdown()은 V4/V5도 통과하는 정상 본문
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = _make_valid_thread_markdown()
+    fake_response = MagicMock()
+    fake_response.content = [text_block]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+
+    with patch.object(col_mod.anthropic, "Anthropic", return_value=fake_client):
+        result = col_mod.main()
+
+    # 정상 본문 → exit 0 (archive 저장)
+    assert result == 0
+
+
+# ────────────────────────────────────────────────────────
 # collect.main — v1.3.0 X 글자수 사전 검증 (length_exceeded stage)
 # 도입 배경: 2026-05-16 사고 회귀 방지
 # v1.3.1: X Premium 정책 반영 — TWEET_LIMIT을 publish 모듈에서 동적 참조하여
