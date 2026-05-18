@@ -94,6 +94,28 @@ jobs:
           delete-branch: true
           labels: weekly-news-draft
 
+      # v1.4.0 신규 (2026-05-18): Auto-merge — validation 통과 시 PR 자동 머지
+      # 도입 배경: 마스터 결정 — X 자동 발행 도입. collect.py가 V1+V2+V3+V4+V5
+      #            모두 통과해야 archive 저장 + PR 생성 → 그 PR을 자동 머지
+      #            → publish.yml 자동 트리거로 X 발행.
+      # 안전장치: PR이 실제 생성된 경우만(`pull-request-url != ''`) 머지 시도.
+      #          DRY_RUN 모드에서는 PR 미생성이므로 자동 머지도 미실행.
+      # 마스터 거부권: PR에 `do-not-merge` 라벨 부착 시 머지 안 됨 (GitHub 기본 정책).
+      #               긴급 차단: publish.yml workflow disable.
+      # 롤백: 본 step 전체 주석 처리.
+      - name: 🟢 Auto-merge PR (v1.4.0)
+        if: env.DRY_RUN != 'true' && steps.pr.outputs.pull-request-url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ steps.pr.outputs.pull-request-number }}"
+          echo "[auto-merge] PR #${PR_NUM} 즉시 머지 시도 (--squash --delete-branch)"
+          gh pr merge "${PR_NUM}" --squash --delete-branch --admin || {
+            echo "::warning::auto-merge 실패 — 마스터가 수동 머지 가능"
+            exit 0
+          }
+          echo "✅ Auto-merge 완료 — publish.yml 자동 트리거됨"
+
       # D3 패치 (2026-05-17): always() + PR step outcome 4분기 처리
       # 도입 배경: 기존 if: success() 는 PR step 실패 시 알림도 차단 → 인지 지연.
       # 분기:
