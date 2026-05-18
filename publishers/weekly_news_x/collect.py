@@ -390,6 +390,7 @@ def main() -> int:
             f"- 재시도: Actions → Weekly News Draft → Re-run failed jobs"
         )
         return 1
+          
 
     logger.info(f"[collect]   ✅ X 글자수 검증 통과 (모든 {chunk_count}개 청크 ≤ {TWEET_LIMIT}자)")
 
