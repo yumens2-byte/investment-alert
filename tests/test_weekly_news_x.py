@@ -758,22 +758,34 @@ def test_collect_main_notifies_on_empty_response(
 # collect.main — 응답 형식 사후 검증 (v1.2.0 신규)
 # ────────────────────────────────────────────────────────
 def _make_valid_thread_markdown() -> str:
-    """제목: 정상 X 스레드 마크다운 8청크 생성 (테스트 fixture)"""
+    """제목: 정상 X 스레드 마크다운 8청크 생성 (테스트 fixture)
+
+    v1.4.0 패치: V4 (날짜 fresh) + V5 (지수/시장 키워드) 통과하도록 본문 보강.
+    fresh window 의존성을 피하기 위해 동적 날짜 사용 (오늘 + 어제).
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Seoul"))
+    yesterday = today - timedelta(days=1)
+    today_md = today.strftime("%-m/%-d")
+    yest_md = yesterday.strftime("%-m/%-d")
+
     return (
-        "**🧵 [5/11 미국 주요뉴스 브리핑]**\n\n"
+        f"**🧵 [{today_md} 미국 주요뉴스 브리핑]**\n\n"
         "오늘의 핵심: A · B · C · D · E\n\n"
         "---\n\n"
-        "**1/ 📊 첫 번째 뉴스**\n본문 1\n#tag1\n\n"
+        f"**1/ 📊 S&P 500 마감 ({today_md})**\nNasdaq 본문 1\n#SPX\n\n"
         "---\n\n"
-        "**2/ 🔥 두 번째 뉴스**\n본문 2\n#tag2\n\n"
+        f"**2/ 🔥 Fed 금리 동결 ({today_md})**\n본문 2\n#FOMC\n\n"
         "---\n\n"
-        "**3/ 💾 세 번째 뉴스**\n본문 3\n#tag3\n\n"
+        f"**3/ 💾 VIX 변동성 ({yest_md})**\n본문 3\n#VIX\n\n"
         "---\n\n"
-        "**4/ 🛢️ 네 번째 뉴스**\n본문 4\n#tag4\n\n"
+        "**4/ 🛢️ 원유 가격 동향**\n본문 4\n#WTI\n\n"
         "---\n\n"
-        "**5/ 🐉 다섯 번째 뉴스**\n본문 5\n#tag5\n\n"
+        "**5/ 🐉 Dow Jones 신고가**\n본문 5\n#DJI\n\n"
         "---\n\n"
-        "**6/ 🦅 여섯 번째 뉴스**\n본문 6\n#tag6\n\n"
+        "**6/ 🦅 국채 수익률**\n본문 6\n#TLT\n\n"
         "---\n\n"
         "**📌 투자자 주목 포인트**\n주목 포인트\n#NVDA\n"
     )
@@ -1384,11 +1396,8 @@ def test_collect_main_success_writes_github_output(
 
     text_block = MagicMock()
     text_block.type = "text"
-    text_block.text = (
-        "**🧵 헤더**\n\n---\n\n"
-        "1\n\n---\n\n2\n\n---\n\n3\n\n---\n\n"
-        "4\n\n---\n\n5\n\n---\n\n6\n\n---\n\n시사점"
-    )
+    # v1.4.0: V4 (날짜 fresh) + V5 (지수/시장 키워드) 통과하도록 보강
+    text_block.text = _make_valid_thread_markdown()
     fake_response = MagicMock()
     fake_response.content = [text_block]
     fake_client = MagicMock()
@@ -1721,7 +1730,6 @@ def test_generate_header_image_no_api_key(
     assert result is None
 
 
-
 @pytest.mark.unit
 def test_generate_header_image_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1774,3 +1782,117 @@ def test_generate_header_image_api_exception(
     from publishers.weekly_news_x.image_gen import generate_header_image
     result = generate_header_image("summary", tmp_path / "x.png")
     assert result is None
+
+
+# ────────────────────────────────────────────────────────
+# v1.4.0 신규 — V4 freshness + V5 required keywords validation
+# ────────────────────────────────────────────────────────
+@pytest.mark.unit
+def test_v4_validate_freshness_pass_with_fresh_date() -> None:
+    """V4 PASS — 본문에 fresh window 내 날짜 1건 이상"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from publishers.weekly_news_x.collect import validate_freshness
+
+    today = datetime(2026, 5, 18, tzinfo=ZoneInfo("Asia/Seoul"))
+    # 한국 일요일 = 미국 토요일 휴장 → 5/15(금) + 5/14(목) 데이터 사용 정상
+    text = "5/15 데이터 마감 S&P 7400, 5/14 사상 최고치 갱신"
+    passed, msg = validate_freshness(text, today, fresh_window_days=3)
+    assert passed is True
+    assert "V4 PASS" in msg
+
+
+@pytest.mark.unit
+def test_v4_validate_freshness_fail_all_stale() -> None:
+    """V4 FAIL — 모든 날짜가 fresh window 외"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from publishers.weekly_news_x.collect import validate_freshness
+
+    today = datetime(2026, 5, 18, tzinfo=ZoneInfo("Asia/Seoul"))
+    # 3/1, 2/15 등 모두 3일 초과
+    text = "3/1 데이터만 있음 2/15 보조"
+    passed, msg = validate_freshness(text, today, fresh_window_days=3)
+    assert passed is False
+    assert "V4 FAIL" in msg
+
+
+@pytest.mark.unit
+def test_v4_validate_freshness_skip_when_no_dates() -> None:
+    """V4 SKIP — 본문에 날짜 패턴 없으면 보수적으로 통과 (V5가 보완)"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from publishers.weekly_news_x.collect import validate_freshness
+
+    today = datetime(2026, 5, 18, tzinfo=ZoneInfo("Asia/Seoul"))
+    text = "Fed 금리 동결 시장 변동성 확대 우려"
+    passed, msg = validate_freshness(text, today, fresh_window_days=3)
+    assert passed is True
+    assert "skip" in msg.lower()
+
+
+@pytest.mark.unit
+def test_v5_validate_keywords_pass() -> None:
+    """V5 PASS — 지수 1+ & 시장 2+ 키워드 보유"""
+    from publishers.weekly_news_x.collect import validate_required_keywords
+
+    text = "S&P 500 마감, Fed 금리 동결, VIX 18 도달, Dow 50000 회복"
+    passed, msg = validate_required_keywords(text)
+    assert passed is True
+    assert "V5 PASS" in msg
+
+
+@pytest.mark.unit
+def test_v5_validate_keywords_fail_no_index() -> None:
+    """V5 FAIL — 지수 키워드 누락"""
+    from publishers.weekly_news_x.collect import validate_required_keywords
+
+    text = "Fed 금리 동결, VIX 상승, 원유 급등"  # 지수 0개, 시장 3개
+    passed, msg = validate_required_keywords(text)
+    assert passed is False
+    assert "V5 FAIL" in msg
+    assert "지수" in msg
+
+
+@pytest.mark.unit
+def test_v5_validate_keywords_fail_insufficient_market() -> None:
+    """V5 FAIL — 시장 키워드 부족 (< 2개)"""
+    from publishers.weekly_news_x.collect import validate_required_keywords
+
+    text = "S&P 500 7400 도달, Nasdaq 26000 신고가"  # 지수 2개, 시장 0개
+    passed, msg = validate_required_keywords(text)
+    assert passed is False
+    assert "V5 FAIL" in msg
+    assert "시장" in msg
+
+
+@pytest.mark.unit
+def test_v4_validate_freshness_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V4 — WEEKLY_NEWS_FRESH_WINDOW_DAYS env 1일로 override"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from publishers.weekly_news_x.collect import validate_freshness
+
+    today = datetime(2026, 5, 18, tzinfo=ZoneInfo("Asia/Seoul"))
+    monkeypatch.setenv("WEEKLY_NEWS_FRESH_WINDOW_DAYS", "1")
+    # 5/15는 3일 전 → 1일 window 외
+    text = "5/15 데이터만"
+    passed, _ = validate_freshness(text, today)
+    assert passed is False
+
+
+@pytest.mark.unit
+def test_v5_validate_keywords_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V5 — WEEKLY_NEWS_REQUIRED_MARKET_MIN env 4로 override"""
+    from publishers.weekly_news_x.collect import validate_required_keywords
+
+    monkeypatch.setenv("WEEKLY_NEWS_REQUIRED_MARKET_MIN", "4")
+    # 지수 1개 (S&P), 시장 3개 (Fed, VIX, 원유) — Fed/금리는 동시 매칭 가능하므로 금리 제외
+    text = "S&P 마감 Fed 정책 VIX 상승 원유 급등"
+    passed, msg = validate_required_keywords(text)
+    assert passed is False
+    assert "V5 FAIL" in msg
