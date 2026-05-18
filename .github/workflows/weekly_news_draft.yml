@@ -60,9 +60,13 @@ jobs:
         run: python -m publishers.weekly_news_x.comic_voice
         continue-on-error: true
 
-      # 옵션: NOTION_TOKEN/DB_ID 시크릿 등록 시에만 실제 동작
-      # DRY_RUN=true 시 Notion에도 적재하지 않음 (검증 모드 일관성)
-      - name: 📚 Sync draft to Notion (optional)
+      # weekly_news_x 전용 Notion 적재 (2026-05-18 재활성)
+      # DB: 📰 weekly_news_x — 미국 뉴스 브리핑 발행 이력
+      # URL: https://www.notion.so/56130cb86f604b1b9f827f20609d21c5
+      # 이력:
+      #   2026-05-17: 적재 비활성 (전용 DB 미존재로 404 발생) — env 빈 값으로 임시 차단
+      #   2026-05-18: 전용 DB 신규 생성 + Integration 연결 완료 → 재활성
+      - name: 📚 Sync draft to Notion
         if: env.DRY_RUN != 'true'
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
