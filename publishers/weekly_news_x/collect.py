@@ -17,9 +17,10 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -27,7 +28,7 @@ import anthropic
 
 from core.logger import get_logger
 
-VERSION = "1.3.1"  # X Premium 380자 정책 반영 (publish.py TWEET_LIMIT 추종, 2026-05-17)
+VERSION = "1.4.0"  # V4 freshness + V5 required keywords validation 추가 (2026-05-18)
 
 logger = get_logger(__name__)
 
@@ -165,6 +166,159 @@ def save_archive(content: str, today: datetime) -> Path:
     file_path = target_dir / f"{yyyy}-{mm}-{dd}-{weekday}.md"
     file_path.write_text(content, encoding="utf-8")
     return file_path
+
+
+# ────────────────────────────────────────────────────────────────────────
+# v1.4.0 신규 — V4 freshness + V5 required keywords validation
+# ────────────────────────────────────────────────────────────────────────
+# 도입 배경: 2026-05-18 마스터 결정 — X 자동 발행 도입 시 검증 강화 필요.
+#   V4: 본문이 stale 데이터를 다루지 않는지 (날짜 신선도)
+#   V5: 미국 주식 뉴스 핵심 키워드 누락 여부 (지수/시장)
+# 운영 정책: 한국 일요일 = 미국 토요일 휴장일이므로 fresh window = 3일이 안전
+#   (예: 한국 5/18(일) → 본문이 5/15(금), 5/14(목) 데이터 사용 정상)
+# 임계값은 ENV override 가능 (운영 보면서 조정).
+# 롤백: 두 함수 통째로 주석 처리 + main()에서 호출부 제거 + VERSION 환원.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def validate_freshness(
+    thread_text: str,
+    today_kst: datetime,
+    fresh_window_days: int | None = None,
+) -> tuple[bool, str]:
+    """
+    제목: 본문 날짜 신선도 검증 (V4)
+
+    내용: 본문에서 "M/D" 또는 "MM/DD" 패턴을 추출하여 today_kst 기준
+          fresh_window_days 이내의 날짜인지 검사한다.
+          한 건이라도 fresh window 내 날짜가 있으면 통과.
+          모든 추출 날짜가 stale이면 실패.
+
+    Args:
+        thread_text: 마크다운 본문 전체
+        today_kst: KST 기준 today (datetime)
+        fresh_window_days: 신선 임계값 (기본 3, ENV WEEKLY_NEWS_FRESH_WINDOW_DAYS override)
+
+    Returns:
+        (passed, message): 통과 여부와 사유 메시지
+
+    Examples:
+        >>> from datetime import datetime
+        >>> from zoneinfo import ZoneInfo
+        >>> today = datetime(2026, 5, 18, tzinfo=ZoneInfo("Asia/Seoul"))
+        >>> validate_freshness("5/15 데이터 + 5/14 보조", today, 3)
+        (True, '...')
+        >>> validate_freshness("3/1 데이터만 있음", today, 3)
+        (False, '...')
+    """
+    if fresh_window_days is None:
+        fresh_window_days = int(os.environ.get("WEEKLY_NEWS_FRESH_WINDOW_DAYS", "3"))
+
+    # M/D 또는 MM/DD 패턴 (예: 5/15, 05/15, 5/14)
+    # 단, URL이나 다른 숫자 패턴(예: 3.5~3.75%) 제외 위해 단순 \b 경계 사용
+    date_pattern = re.compile(r"\b(\d{1,2})/(\d{1,2})\b")
+    matches = date_pattern.findall(thread_text)
+
+    if not matches:
+        # 본문에 날짜 언급이 전혀 없으면 검증 불가 — 보수적으로 통과 처리
+        # (V5가 별도로 키워드 누락 검증 수행)
+        return (True, "본문에 날짜 패턴 미발견 — V4 skip (V5 keyword 검증으로 보완)")
+
+    today_date = today_kst.date()
+    threshold = today_date - timedelta(days=fresh_window_days)
+
+    fresh_dates = []
+    stale_dates = []
+    for month_str, day_str in matches:
+        try:
+            month, day = int(month_str), int(day_str)
+            if not (1 <= month <= 12 and 1 <= day <= 31):
+                continue
+            # 연도는 today_kst.year로 가정 (작년-올해 경계 = 12월-1월은 운영상 드뭄)
+            extracted = today_date.replace(month=month, day=day)
+            if extracted > today_date:
+                # 미래 날짜는 작년 같은 일자로 추정 (예: today 5/18, 매치 12/31 → 작년)
+                extracted = extracted.replace(year=today_date.year - 1)
+
+            if extracted >= threshold:
+                fresh_dates.append(f"{month}/{day}")
+            else:
+                stale_dates.append(f"{month}/{day}")
+        except ValueError:
+            # 유효하지 않은 날짜 (예: 2/30) — skip
+            continue
+
+    if fresh_dates:
+        return (
+            True,
+            f"V4 PASS — fresh window {fresh_window_days}일 내 날짜 {len(fresh_dates)}건: "
+            f"{', '.join(fresh_dates[:5])}",
+        )
+    else:
+        return (
+            False,
+            f"V4 FAIL — 모든 추출 날짜가 stale (>{fresh_window_days}일 전): "
+            f"{', '.join(stale_dates[:5])}",
+        )
+
+
+def validate_required_keywords(thread_text: str) -> tuple[bool, str]:
+    """
+    제목: 미국 주식 뉴스 필수 키워드 검증 (V5)
+
+    내용: 본문에 다음 조건 모두 만족해야 통과:
+        - 지수 키워드: S&P, Nasdaq, Dow, SPX 중 최소 1개
+        - 시장 키워드: 금리/Fed/원유/달러/VIX/연준/국채 중 최소 2개
+
+    임계값은 ENV override 가능:
+        - WEEKLY_NEWS_REQUIRED_INDEX_MIN (기본 1)
+        - WEEKLY_NEWS_REQUIRED_MARKET_MIN (기본 2)
+
+    Args:
+        thread_text: 마크다운 본문 전체
+
+    Returns:
+        (passed, message): 통과 여부와 사유 메시지
+    """
+    index_min = int(os.environ.get("WEEKLY_NEWS_REQUIRED_INDEX_MIN", "1"))
+    market_min = int(os.environ.get("WEEKLY_NEWS_REQUIRED_MARKET_MIN", "2"))
+
+    index_keywords = ["S&P", "Nasdaq", "Dow", "SPX", "NASDAQ", "DOW"]
+    market_keywords = [
+        "금리",
+        "Fed",
+        "FED",
+        "원유",
+        "달러",
+        "VIX",
+        "연준",
+        "국채",
+        "Treasury",
+        "FOMC",
+    ]
+
+    index_hits = [k for k in index_keywords if k in thread_text]
+    market_hits = [k for k in market_keywords if k in thread_text]
+
+    if len(index_hits) < index_min:
+        return (
+            False,
+            f"V5 FAIL — 지수 키워드 부족: {len(index_hits)}개 발견 (최소 {index_min}개 필요). "
+            f"검사 대상: {', '.join(index_keywords)}",
+        )
+
+    if len(market_hits) < market_min:
+        return (
+            False,
+            f"V5 FAIL — 시장 키워드 부족: {len(market_hits)}개 발견 (최소 {market_min}개 필요). "
+            f"검사 대상: {', '.join(market_keywords[:5])}...",
+        )
+
+    return (
+        True,
+        f"V5 PASS — 지수 {len(index_hits)}개 ({', '.join(index_hits[:3])}), "
+        f"시장 {len(market_hits)}개 ({', '.join(market_hits[:3])})",
+    )
 
 
 def main() -> int:
@@ -390,9 +544,52 @@ def main() -> int:
             f"- 재시도: Actions → Weekly News Draft → Re-run failed jobs"
         )
         return 1
-          
 
     logger.info(f"[collect]   ✅ X 글자수 검증 통과 (모든 {chunk_count}개 청크 ≤ {TWEET_LIMIT}자)")
+
+    # ──────────────────────────────────────────────────────────
+    # v1.4.0 Step 5.6 — V4 freshness + V5 required keywords 검증
+    # 도입 배경: 2026-05-18 X 자동 발행 도입 시 검증 강화 (마스터 결정)
+    #   V4 freshness: 본문 데이터가 stale 아닌지 (기본 fresh window 3일)
+    #   V5 required keywords: 미국 주식 뉴스 필수 키워드 누락 여부
+    # 실패 시: notify_draft_failure(stage="validation_v4_v5") → exit 1
+    # 임계값 ENV override 가능 (운영 보면서 조정).
+    # 롤백: 본 블록 통째로 주석 처리 + VERSION 1.3.1 환원.
+    # ──────────────────────────────────────────────────────────
+    v4_passed, v4_msg = validate_freshness(final_text, today)
+    logger.info(f"[collect]   {v4_msg}")
+    v5_passed, v5_msg = validate_required_keywords(final_text)
+    logger.info(f"[collect]   {v5_msg}")
+
+    if not (v4_passed and v5_passed):
+        failed_validations = []
+        if not v4_passed:
+            failed_validations.append(v4_msg)
+        if not v5_passed:
+            failed_validations.append(v5_msg)
+        detail_lines = "\n".join(f"  - {m}" for m in failed_validations)
+
+        logger.error(
+            f"[collect]   ❌ V4/V5 검증 실패 ({len(failed_validations)}건):\n{detail_lines}"
+        )
+        notify_draft_failure(
+            stage="validation_v4_v5",
+            error_msg=(
+                f"V4/V5 validation 실패 {len(failed_validations)}건:\n{detail_lines}\n"
+                "→ archive 저장 안 함 / PR 생성 차단 / X 자동 발행 차단."
+            ),
+            weekday=weekday,
+        )
+        _write_step_summary(
+            f"### ❌ collect 실패: validation_v4_v5\n"
+            f"- 실패 검증: {len(failed_validations)}건\n"
+            f"- 상세:\n```\n{detail_lines}\n```\n"
+            f"- archive 저장 안 함 (PR 생성 차단 / X 발행 차단)\n"
+            f"- 재시도: Actions → Weekly News Draft → Re-run failed jobs"
+        )
+        return 1
+
+    logger.info("[collect]   ✅ V4 freshness + V5 required keywords 검증 통과")
 
     # ── Step 6: archive 저장 ──
     logger.info("[collect] [4/4] archive 저장 중...")
