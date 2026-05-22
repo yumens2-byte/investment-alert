@@ -3,6 +3,12 @@
 내용: SectorCollector(수집) → SectorFlowStore(적재) → SectorFlowLayer(감지) →
       SectorAlertEngine(Signal 생성) → Publisher(발행) → AlertStore(쿨다운).
 
+      v1.1.0: SECTOR_KIND_TONE_ENABLED=true 시 친근 톤(F감성) 1순위 시도.
+              sector_formatter_kind 모듈로 Gemini Flash-Lite 생성.
+              실패 시 기존 sector_formatter로 graceful fallback.
+              X 발행 없음 (TG Free/Paid/Internal 3채널만).
+              Internal은 운영자 디버깅 친화로 기존 톤 유지.
+
 처리 플로우:
   1. 로거 + 사전 점검 경고
   2. 휴장일/주말 체크 → 조기 종료
@@ -11,7 +17,7 @@
   5. 적재 (ia_sector_flow_daily upsert)
   6. 변화 감지 (5일 spread 계산)
   7. SectorSignal 생성 (SHADOW_MODE 분기)
-  8. 채널별 발행 (jitter 포함)
+  8. 채널별 발행 (jitter 포함) — Free/Paid는 KIND 톤 1순위 + fallback
   9. AlertStore 발행 결과 기록 + 쿨다운 설정
 
 주요 함수:
@@ -37,7 +43,7 @@ from detection.sector_flow_layer import SectorFlowLayer
 from publishers.sector_formatter import SectorFormatter
 from publishers.telegram_publisher import TelegramPublisher
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 
 def _log_preflight_warnings() -> None:
@@ -179,7 +185,26 @@ def main() -> None:
 
     if signal.publish_tg_free:
         try:
-            msg = formatter.format_tg_free(signal)
+            # v1.1.0: SECTOR_KIND_TONE_ENABLED=true 시 친근 톤 1순위 시도
+            msg = None
+            if os.environ.get("SECTOR_KIND_TONE_ENABLED", "").lower() in (
+                "true", "1", "yes",
+            ):
+                try:
+                    from publishers.sector_formatter_kind import format_tg_free_kind
+                    msg = format_tg_free_kind(signal)
+                except ImportError:
+                    logger.warning(
+                        "[run_sector_alert] sector_formatter_kind 임포트 실패 "
+                        "→ 기존 흐름"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[run_sector_alert] KIND_TONE Free 예외 → 기존 흐름: "
+                        f"{type(e).__name__}: {e}"
+                    )
+            if not msg:
+                msg = formatter.format_tg_free(signal)
             tg_pub.publish_free(msg)
             tg_free_ok = True
         except Exception as e:
@@ -189,7 +214,26 @@ def main() -> None:
 
     if signal.publish_tg_paid:
         try:
-            msg = formatter.format_tg_paid(signal)
+            # v1.1.0: SECTOR_KIND_TONE_ENABLED=true 시 친근 톤 1순위 시도
+            msg = None
+            if os.environ.get("SECTOR_KIND_TONE_ENABLED", "").lower() in (
+                "true", "1", "yes",
+            ):
+                try:
+                    from publishers.sector_formatter_kind import format_tg_paid_kind
+                    msg = format_tg_paid_kind(signal)
+                except ImportError:
+                    logger.warning(
+                        "[run_sector_alert] sector_formatter_kind 임포트 실패 "
+                        "→ 기존 흐름"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[run_sector_alert] KIND_TONE Paid 예외 → 기존 흐름: "
+                        f"{type(e).__name__}: {e}"
+                    )
+            if not msg:
+                msg = formatter.format_tg_paid(signal)
             tg_pub.publish_paid(msg)
             tg_paid_ok = True
         except Exception as e:
