@@ -3,6 +3,9 @@
 내용: AlertSignal을 받아 X(Twitter)와 Telegram 발행용 메시지를 생성합니다.
       L1/L2/L3 레벨별로 톤과 긴급도가 다르게 구성됩니다.
       v1.1.0: DRY_RUN=false 시 Gemini AI 자연어 트윗 생성 지원.
+      v1.4.0: KIND_TONE_ENABLED=true 시 친근 톤(F감성) 1순위 시도.
+              alert_formatter_kind 모듈로 L1=Claude, L2/L3=Gemini 분담.
+              실패 시 기존 _generate_ai_tweet → 템플릿 순차 fallback.
 
 주요 클래스:
   - AlertFormatter: 레벨별 X/TG 메시지 생성
@@ -25,7 +28,7 @@ from core.logger import get_logger
 if TYPE_CHECKING:
     pass
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 
 logger = get_logger(__name__)
 
@@ -161,6 +164,23 @@ class AlertFormatter:
         """
         if force_template or _is_dry_run():
             return self._format_x_template(level, score, reasoning, top_news_titles)
+
+        # K3 패치 (v1.4.0): 친근 톤 1순위 시도 → 실패 시 기존 AI 트윗 → 템플릿 fallback
+        # KIND_TONE_ENABLED=true 일 때만 동작. 그 외엔 무시되어 기존 흐름.
+        if os.environ.get("KIND_TONE_ENABLED", "").lower() in ("true", "1", "yes"):
+            try:
+                from publishers.alert_formatter_kind import format_x_kind  # noqa: PLC0415
+                hashtags = _random.choice(_X_HASHTAG_POOL)
+                kind_msg = format_x_kind(level, score, reasoning, top_news_titles, hashtags)
+                if kind_msg:
+                    return kind_msg
+            except ImportError:
+                logger.warning("[AlertFormatter] alert_formatter_kind 임포트 실패 → 기존 흐름")
+            except Exception as e:
+                logger.warning(
+                    f"[AlertFormatter] KIND_TONE 예외 → 기존 흐름: "
+                    f"{type(e).__name__}: {e}"
+                )
 
         ai_msg = self._generate_ai_tweet(level, score, reasoning, top_news_titles)
         if ai_msg:
@@ -350,6 +370,27 @@ class AlertFormatter:
             available = list(_TG_HEADER_TIME_PHRASES)
         time_phrase = _random.choice(available)
         self._tg_phrases_used.add(time_phrase)
+
+        # K3 패치 (v1.4.0): 친근 톤 1순위 시도 → 실패 시 기존 HTML 포맷 fallback
+        # KIND_TONE_ENABLED=true 일 때만 동작. DRY_RUN 시 스킵 (안전).
+        if not _is_dry_run() and os.environ.get(
+            "KIND_TONE_ENABLED", ""
+        ).lower() in ("true", "1", "yes"):
+            try:
+                from publishers.alert_formatter_kind import format_tg_kind  # noqa: PLC0415
+                kind_msg = format_tg_kind(
+                    level, score, reasoning, top_news_titles,
+                    top_youtube_titles, health_score, alert_id, time_phrase,
+                )
+                if kind_msg:
+                    return kind_msg
+            except ImportError:
+                logger.warning("[AlertFormatter] alert_formatter_kind 임포트 실패 → 기존 흐름")
+            except Exception as e:
+                logger.warning(
+                    f"[AlertFormatter] KIND_TONE TG 예외 → 기존 흐름: "
+                    f"{type(e).__name__}: {e}"
+                )
 
         lines: list[str] = [
             header,
