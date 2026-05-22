@@ -92,6 +92,9 @@ def _log_env_diagnostics() -> None:
     logger.info(
         f"  - ATTACH_IMAGE = {os.environ.get('ATTACH_IMAGE', '(미설정)')}"
     )
+    logger.info(
+        f"  - IMAGE_PROVIDER = {os.environ.get('IMAGE_PROVIDER', '(미설정, default=dalle)')}"
+    )
     logger.info(f"  - GITHUB_OUTPUT: {'있음' if os.environ.get('GITHUB_OUTPUT') else '없음'}")
 
 
@@ -271,10 +274,20 @@ def upload_header_image() -> str | None:
     if not get_env_bool("ATTACH_IMAGE", default=False):
         return None
 
+    # IMAGE_PROVIDER 환경변수로 이미지 생성 모듈 선택 (디폴트: dalle, 가능: gemini)
+    # 도윤 페르소나 + 여성 친화 비주얼 고도화를 위해 gemini provider 추가 (2026-05-23)
+    image_provider = os.environ.get("IMAGE_PROVIDER", "dalle").lower()
     try:
-        from publishers.weekly_news_x.image_gen import generate_header_image
+        if image_provider == "gemini":
+            from publishers.weekly_news_x.image_gen_gemini import (
+                generate_header_image_gemini as generate_header_image,
+            )
+        else:
+            from publishers.weekly_news_x.image_gen import generate_header_image
     except ImportError:
-        logger.warning("[publish] image_gen 임포트 불가 — 이미지 첨부 skip")
+        logger.warning(
+            f"[publish] image_gen ({image_provider}) 임포트 불가 — 이미지 첨부 skip"
+        )
         return None
 
     latest_md = sorted(ARCHIVE_ROOT.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
