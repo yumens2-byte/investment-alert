@@ -55,6 +55,8 @@ jobs:
       X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
       X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
 
+      SECTOR_KIND_TONE_ENABLED: ${{ vars.SECTOR_KIND_TONE_ENABLED }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
