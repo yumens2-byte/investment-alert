@@ -33,10 +33,16 @@ jobs:
       TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
       # cron 실행 시 DRY_RUN=false, workflow_dispatch 시 사용자 입력
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
+      # v2.0.0 (2026-05-23): true 시 PR 우회 + 직접 commit + 즉시 publish
+      AUTO_PUBLISH_ENABLED: ${{ vars.AUTO_PUBLISH_ENABLED }}
 
     steps:
       - name: 🔄 Checkout
         uses: actions/checkout@v4
+        with:
+          # v2.0.0: AUTO_PUBLISH_ENABLED 시 main 직접 commit + push 위해 필요
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: 🐍 Set up Python 3.11
         uses: actions/setup-python@v5
@@ -75,10 +81,90 @@ jobs:
         run: python -m publishers.weekly_news_x.notion_sync
         continue-on-error: true
 
+      # ════════════════════════════════════════════════════════
+      # v2.0.0 (2026-05-23): AUTO_PUBLISH_ENABLED 분기 — PR 우회
+      # ════════════════════════════════════════════════════════
+      # 도입 배경: 2026-05-23 마스터 결정 — PR 생성/머지 실패 시 X 발행 차단되는
+      #            문제 해결. collect.py V1~V5 검증 통과 = archive 저장 = 발행 OK.
+      #            검증 게이트로 PR/머지를 대체.
+      # 안전장치:
+      #   - V1~V5 통과한 archive만 존재 → 발행 가능 조건 자동 충족
+      #   - publish.py 내부 sidecar 재발행 방지 게이트 그대로
+      #   - publish.py 내부 validate_tweets(380자) 그대로
+      #   - DRY_RUN=true 시 본 분기 전체 skip
+      # ════════════════════════════════════════════════════════
+      - name: 🚀 Direct commit archive to main (v2.0.0)
+        id: direct_commit
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCHIVE_PATH_INPUT: ${{ steps.collect.outputs.archive_path }}
+          DATE_INPUT: ${{ steps.collect.outputs.date }}
+        run: |
+          set -euo pipefail
+          echo "[direct-commit] archive를 main에 직접 commit 시도"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # archive 변경 확인
+          if [ -z "$(git status --porcelain "${ARCHIVE_PATH_INPUT}")" ]; then
+            echo "::warning::archive 변경 없음 — main에 이미 동일 내용 존재 가능"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git add "${ARCHIVE_PATH_INPUT}"
+          git commit -m "feat(weekly-news): ${DATE_INPUT} auto-publish (V1~V5 PASS)"
+          git push origin main
+          echo "✅ archive main 직접 commit 완료"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: 🐦 Publish thread to X (v2.0.0 direct)
+        id: direct_publish
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true' && steps.direct_commit.outputs.committed == 'true'
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+          X_SCREEN_NAME: ${{ secrets.X_SCREEN_NAME }}
+          ATTACH_IMAGE: ${{ vars.ATTACH_IMAGE }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FORCE_REPUBLISH: ${{ vars.FORCE_REPUBLISH }}
+          ARCHIVE_PATH: ${{ steps.collect.outputs.archive_path }}
+        run: python -m publishers.weekly_news_x.publish
+
+      - name: 💾 Commit sidecar metadata (v2.0.0)
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true' && steps.direct_publish.outputs.sidecar_path != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${{ steps.direct_publish.outputs.sidecar_path }}"
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(weekly-news): publish metadata $(date -u +%Y-%m-%d)"
+            git push origin main
+            echo "✅ sidecar committed: ${{ steps.direct_publish.outputs.sidecar_path }}"
+          else
+            echo "ℹ️ no sidecar changes to commit"
+          fi
+
+      - name: 📚 Sync published thread to Notion (v2.0.0)
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true' && steps.direct_publish.outputs.thread_url != ''
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+          THREAD_URL: ${{ steps.direct_publish.outputs.thread_url }}
+          STATUS: Published
+        run: python -m publishers.weekly_news_x.notion_sync
+        continue-on-error: true
+
+      # ════════════════════════════════════════════════════════
+      # 기존 PR 흐름 (백업 경로, AUTO_PUBLISH_ENABLED=false 시만)
+      # ════════════════════════════════════════════════════════
       # PR 생성 — DRY_RUN=false 일 때만
       - name: 📤 Create Pull Request
         id: pr
-        if: env.DRY_RUN != 'true'
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED != 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: 'draft(weekly-news): ${{ steps.collect.outputs.date }}'
@@ -99,16 +185,9 @@ jobs:
           labels: weekly-news-draft
 
       # v1.4.0 신규 (2026-05-18): Auto-merge — validation 통과 시 PR 자동 머지
-      # 도입 배경: 마스터 결정 — X 자동 발행 도입. collect.py가 V1+V2+V3+V4+V5
-      #            모두 통과해야 archive 저장 + PR 생성 → 그 PR을 자동 머지
-      #            → publish.yml 자동 트리거로 X 발행.
-      # 안전장치: PR이 실제 생성된 경우만(`pull-request-url != ''`) 머지 시도.
-      #          DRY_RUN 모드에서는 PR 미생성이므로 자동 머지도 미실행.
-      # 마스터 거부권: PR에 `do-not-merge` 라벨 부착 시 머지 안 됨 (GitHub 기본 정책).
-      #               긴급 차단: publish.yml workflow disable.
-      # 롤백: 본 step 전체 주석 처리.
+      # v2.0.0 (2026-05-23): AUTO_PUBLISH_ENABLED=true 시 본 step skip
       - name: 🟢 Auto-merge PR (v1.4.0)
-        if: env.DRY_RUN != 'true' && steps.pr.outputs.pull-request-url != ''
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED != 'true' && steps.pr.outputs.pull-request-url != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -132,18 +211,61 @@ jobs:
         if: always() && steps.collect.outputs.archive_path != ''
         env:
           DRY_RUN_INPUT: ${{ env.DRY_RUN }}
+          AUTO_PUBLISH_INPUT: ${{ env.AUTO_PUBLISH_ENABLED }}
           ARCHIVE_PATH_INPUT: ${{ steps.collect.outputs.archive_path }}
           PR_URL_INPUT: ${{ steps.pr.outputs.pull-request-url }}
           PR_STEP_OUTCOME: ${{ steps.pr.outcome }}
+          DIRECT_COMMITTED: ${{ steps.direct_commit.outputs.committed }}
+          DIRECT_PUBLISH_OUTCOME: ${{ steps.direct_publish.outcome }}
+          DIRECT_THREAD_URL: ${{ steps.direct_publish.outputs.thread_url }}
           WEEKDAY_INPUT: ${{ steps.collect.outputs.weekday }}
         run: |
           python -c "
           import os
+          dry_run = (os.environ.get('DRY_RUN_INPUT', 'false').lower() == 'true')
+          auto_publish = (os.environ.get('AUTO_PUBLISH_INPUT', 'false').lower() == 'true')
+          archive_path = os.environ.get('ARCHIVE_PATH_INPUT', '')
+          weekday = os.environ.get('WEEKDAY_INPUT', 'Saturday') or 'Saturday'
+
+          # v2.0.0 (AUTO_PUBLISH_ENABLED=true) 분기
+          if auto_publish and not dry_run:
+              direct_committed = os.environ.get('DIRECT_COMMITTED', '') == 'true'
+              direct_outcome = os.environ.get('DIRECT_PUBLISH_OUTCOME', '')
+              thread_url = os.environ.get('DIRECT_THREAD_URL', '')
+
+              if not direct_committed:
+                  from publishers.weekly_news_x.notifier import notify_draft_failure
+                  notify_draft_failure(
+                      stage='direct_commit_skipped',
+                      error_msg='archive 변경 없음 — main에 이미 동일 내용 존재 가능. 발행 차단.',
+                      weekday=weekday,
+                  )
+              elif direct_outcome == 'failure':
+                  from publishers.weekly_news_x.notifier import notify_draft_failure
+                  notify_draft_failure(
+                      stage='direct_publish',
+                      error_msg='archive commit은 성공했으나 X 발행 실패. publish.py 로그 확인 필요.',
+                      weekday=weekday,
+                  )
+              elif direct_outcome == 'success':
+                  from publishers.weekly_news_x.notifier import notify_success
+                  notify_success(
+                      archive_name=archive_path.split('/')[-1] if archive_path else 'unknown',
+                      thread_url=thread_url or '(unknown)',
+                      tweet_count=0,
+                  )
+              else:
+                  from publishers.weekly_news_x.notifier import notify_draft_failure
+                  notify_draft_failure(
+                      stage='direct_publish_skipped',
+                      error_msg=f'direct_publish outcome={direct_outcome}',
+                      weekday=weekday,
+                  )
+              raise SystemExit(0)
+
+          # 기존 PR 흐름 (AUTO_PUBLISH_ENABLED=false)
           pr_outcome = os.environ.get('PR_STEP_OUTCOME', 'success')
           pr_url = os.environ.get('PR_URL_INPUT', '')
-          weekday = os.environ.get('WEEKDAY_INPUT', 'Saturday') or 'Saturday'
-          dry_run = (os.environ.get('DRY_RUN_INPUT', 'false').lower() == 'true')
-          archive_path = os.environ.get('ARCHIVE_PATH_INPUT', '')
 
           if pr_outcome == 'failure':
               from publishers.weekly_news_x.notifier import notify_draft_failure
