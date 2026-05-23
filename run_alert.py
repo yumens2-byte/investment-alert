@@ -3,12 +3,19 @@
 내용: MacroNewsLayer(감지) -> AlertEngine(Signal 생성) -> Publisher(발행) ->
       AlertStore(쿨다운 설정 + 발행결과 기록) 전체 파이프라인을 실행합니다.
 
+      v1.3.0 (PHASE 2): KIND_TONE_IMAGE_ENABLED=true 시 Gemini 이미지 사전 생성.
+              알림당 1장 생성 → TG Free/Paid 양쪽에서 publish_with_photo로 첨부.
+              X와 TG Internal은 텍스트만 (안티봇 회피 + 운영자 디버깅 친화).
+              SYSTEM_DEGRADED 등급은 이미지 미생성 (자원 절약).
+              실패 시 텍스트만 graceful fallback.
+
 주요 함수:
   - main(): 전체 파이프라인 실행 (GitHub Actions에서 직접 호출)
 """
 
 from __future__ import annotations
 
+import os
 import random as _random
 import re as _re
 import sys
@@ -25,7 +32,7 @@ from publishers.alert_formatter import AlertFormatter
 from publishers.telegram_publisher import TelegramPublisher
 from publishers.x_publisher import XPublisher
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 
 # B7 패치 (v1.2.0): top_news 정규화 hash 헬퍼
@@ -177,6 +184,48 @@ def main() -> None:
     # AS-IS: tg_msg 한 번 생성 → Free/Paid 동일 본문 발행 = 안티봇 위험
     # TO-BE: 각 분기 안에서 format_tg 별도 호출 → random 셔플로 본문 차별화
 
+    # ────────────────────────────────────────────────────────
+    # PHASE 2 (v1.3.0): KIND 톤 이미지 사전 생성
+    # ────────────────────────────────────────────────────────
+    # 조건:
+    #   - KIND_TONE_ENABLED=true (친근 톤 활성)
+    #   - KIND_TONE_IMAGE_ENABLED=true (이미지 첨부 활성, 디폴트 false)
+    #   - signal.level ∈ (L1, L2, L3) — SYSTEM_DEGRADED는 자원 절약 위해 미생성
+    #   - GEMINI_API_KEY 설정됨
+    # 실패 시 image_path=None → 호출자가 텍스트만 fallback (graceful)
+    # 알림당 1회 생성, TG Free/Paid 양쪽 공유 (비용·일관성)
+    image_path = None
+    _kind_enabled = os.environ.get("KIND_TONE_ENABLED", "").lower() in (
+        "true", "1", "yes",
+    )
+    _image_enabled = os.environ.get("KIND_TONE_IMAGE_ENABLED", "").lower() in (
+        "true", "1", "yes",
+    )
+    if (
+        _kind_enabled
+        and _image_enabled
+        and signal.level in ("L1", "L2", "L3")
+        and os.environ.get("GEMINI_API_KEY", "")
+    ):
+        try:
+            from publishers.alert_formatter_kind import generate_alert_image_kind
+            image_path = generate_alert_image_kind(
+                level=signal.level,
+                reasoning=signal.reasoning,
+            )
+            if image_path:
+                logger.info(
+                    f"[run_alert] KIND 이미지 생성 성공: {image_path.name}"
+                )
+            else:
+                logger.info("[run_alert] KIND 이미지 생성 None → 텍스트만 발행")
+        except Exception as e:
+            logger.warning(
+                f"[run_alert] KIND 이미지 생성 예외 → 텍스트만 fallback: "
+                f"{type(e).__name__}: {e}"
+            )
+            image_path = None
+
     if signal.publish_x:
         x_msg = formatter.format_x(     # publish_x=True일 때만 생성 → Gemini 호출 조건부
             level=signal.level,
@@ -204,7 +253,11 @@ def main() -> None:
                 health_score=signal.health_score,
                 alert_id=signal.alert_id,
             )
-            tg_pub.publish_free(tg_msg_free)
+            # PHASE 2 (v1.3.0): 이미지 있으면 사진+캡션 발행, 없으면 텍스트만
+            if image_path is not None:
+                tg_pub.publish_with_photo(tg_msg_free, image_path, target="free")
+            else:
+                tg_pub.publish_free(tg_msg_free)
             tg_free_ok = True
         except Exception as e:
             tg_free_err = str(e)
@@ -222,7 +275,11 @@ def main() -> None:
                 health_score=signal.health_score,
                 alert_id=signal.alert_id,
             )
-            tg_pub.publish_paid(tg_msg_paid)
+            # PHASE 2 (v1.3.0): 이미지 있으면 사진+캡션 발행, 없으면 텍스트만
+            if image_path is not None:
+                tg_pub.publish_with_photo(tg_msg_paid, image_path, target="paid")
+            else:
+                tg_pub.publish_paid(tg_msg_paid)
             tg_paid_ok = True
         except Exception as e:
             tg_paid_err = str(e)
