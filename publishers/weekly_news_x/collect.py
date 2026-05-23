@@ -111,6 +111,9 @@ def build_user_message(today: datetime) -> str:
     제목: user role 메시지 조립
     내용: 오늘 날짜를 명시한 한국어 user prompt를 반환.
 
+          v9 (2026-05-23): V5 시장 키워드 강제 한 줄 추가.
+          system 프롬프트만으로 부족한 경우(2026-05-23 13:35 사고) 대비.
+
     Args:
         today: KST 기준 today
 
@@ -120,7 +123,10 @@ def build_user_message(today: datetime) -> str:
     return (
         f"오늘은 한국 시간 {today.strftime('%Y년 %m월 %d일 %A')}이다. "
         "미국 현지 시간 기준 최근 24시간 내 발생한 주요 뉴스 6건을 "
-        "web_search 도구로 수집한 뒤, 시스템 프롬프트의 형식대로 정리하라."
+        "web_search 도구로 수집한 뒤, 시스템 프롬프트의 형식대로 정리하라. "
+        "출력 본문 전체에 시장 키워드(금리/Fed/FOMC/원유/달러/VIX/연준/국채/Treasury) "
+        "중 최소 2개와 지수 키워드(S&P/Nasdaq/Dow/SPX) 중 최소 1개가 "
+        "반드시 등장하도록 작성하라. 미충족 시 자동 검증 V5에 의해 발행 차단된다."
     )
 
 

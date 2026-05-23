@@ -1470,6 +1470,76 @@ def test_build_user_message_includes_date() -> None:
     assert "web_search" in msg
 
 
+@pytest.mark.unit
+def test_build_user_message_includes_v5_keyword_guidance() -> None:
+    """v9 (2026-05-23): user_msg에 V5 시장 키워드 강제 포함
+
+    배경: 2026-05-23 13:35 V5 미달 사고 회귀 방지.
+    user_msg 자체에 V5 키워드 그룹 명시되어 매 호출마다 Claude가 인지.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from publishers.weekly_news_x.collect import build_user_message
+    today = datetime(2026, 5, 23, tzinfo=ZoneInfo("Asia/Seoul"))
+    msg = build_user_message(today)
+
+    # 시장 키워드 그룹 명시 (최소 5개 이상 등장)
+    market_keywords_in_msg = [
+        k for k in ["금리", "Fed", "FOMC", "원유", "달러",
+                    "VIX", "연준", "국채", "Treasury"]
+        if k in msg
+    ]
+    assert len(market_keywords_in_msg) >= 5, (
+        f"user_msg에 시장 키워드가 부족: {len(market_keywords_in_msg)}개 "
+        f"(최소 5개 필요)"
+    )
+
+    # 지수 키워드 그룹도 명시
+    index_keywords_in_msg = [
+        k for k in ["S&P", "Nasdaq", "Dow", "SPX"] if k in msg
+    ]
+    assert len(index_keywords_in_msg) >= 3, (
+        f"user_msg에 지수 키워드가 부족: {len(index_keywords_in_msg)}개"
+    )
+
+    # V5 차단 경고 문구
+    assert "V5" in msg
+    assert "차단" in msg
+
+
+@pytest.mark.unit
+def test_system_prompt_v9_has_key_requirement_section() -> None:
+    """v9: system 프롬프트 최상단에 KEY REQUIREMENT 박스 존재"""
+    from publishers.weekly_news_x.collect import PROMPT_PATH
+
+    content = PROMPT_PATH.read_text(encoding="utf-8")
+    assert "🛑 KEY REQUIREMENT" in content
+    assert "시장 키워드 강제 카운트" in content
+    assert "최소 2개" in content
+
+
+@pytest.mark.unit
+def test_system_prompt_v9_has_output_checklist() -> None:
+    """v9: 파일 끝에 출력 직전 체크리스트 존재"""
+    from publishers.weekly_news_x.collect import PROMPT_PATH
+
+    content = PROMPT_PATH.read_text(encoding="utf-8")
+    assert "출력 직전 자체 검증 체크리스트" in content
+    assert "시장 키워드" in content
+    assert "지수 키워드" in content
+
+
+@pytest.mark.unit
+def test_system_prompt_v9_has_self_check_in_implication_section() -> None:
+    """v9: 시사점 작성 직전 self-check 절차 존재"""
+    from publishers.weekly_news_x.collect import PROMPT_PATH
+
+    content = PROMPT_PATH.read_text(encoding="utf-8")
+    assert "시사점 작성 직전 self-check" in content
+    assert "고유 키워드 수" in content
+
+
 # ────────────────────────────────────────────────────────
 # collect.main — 모든 분기
 # ────────────────────────────────────────────────────────
