@@ -6,7 +6,6 @@
       v1.4.0: KIND_TONE_ENABLED=true 시 친근 톤(F감성) 1순위 시도.
               alert_formatter_kind 모듈로 L1=Claude, L2/L3=Gemini 분담.
               실패 시 기존 _generate_ai_tweet → 템플릿 순차 fallback.
-              
 
 주요 클래스:
   - AlertFormatter: 레벨별 X/TG 메시지 생성
