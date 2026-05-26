@@ -51,10 +51,20 @@ def test_format_x_score_included(formatter: AlertFormatter) -> None:
 
 @pytest.mark.unit
 def test_format_x_news_truncated(formatter: AlertFormatter) -> None:
-    """뉴스 제목 60자 이후 말줄임"""
-    long_title = "A" * 100
+    """v1.5.0: 뉴스 제목 슬라이싱 제거 — X_MAX_LENGTH 이내 보장 + 해시태그 보존 검증
+    기존 [:60]+"..." 말줄임 정책 폐기. 전체 제목을 담되 275자 이내를 보장하고
+    초과 시 해시태그를 보존한 채 앞부분을 trim한다."""
+    long_title = "A" * 300  # X_MAX_LENGTH(275)를 초과하는 극단적 제목
     msg = formatter.format_x("L2", 5.0, "근거", [long_title])
-    assert "..." in msg
+    # 1) 길이 제한 준수
+    assert len(msg) <= X_MAX_LENGTH
+    # 2) 해시태그 보존 (초과 시 trim 대상은 앞부분)
+    hashtag_pool = [
+        "#미국증시 #투자경보", "#글로벌경제 #시장경보", "#미국시장 #InvestmentAlert",
+        "#경제위기 #투자주의", "#InvestmentOS #미국증시", "#시장경보 #글로벌증시",
+        "#미국경제 #Alert",
+    ]
+    assert any(ht in msg for ht in hashtag_pool)
 
 
 @pytest.mark.unit
