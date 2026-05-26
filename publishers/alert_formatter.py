@@ -28,7 +28,7 @@ from core.logger import get_logger
 if TYPE_CHECKING:
     pass
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 logger = get_logger(__name__)
 
@@ -162,12 +162,13 @@ class AlertFormatter:
         Returns:
             str: X 발행용 메시지 (X_MAX_LENGTH=275자 이내)
         """
-        if force_template or _is_dry_run():
-            return self._format_x_template(level, score, reasoning, top_news_titles)
-
-        # K3 패치 (v1.4.0): 친근 톤 1순위 시도 → 실패 시 기존 AI 트윗 → 템플릿 fallback
-        # KIND_TONE_ENABLED=true 일 때만 동작. 그 외엔 무시되어 기존 흐름.
-        if os.environ.get("KIND_TONE_ENABLED", "").lower() in ("true", "1", "yes"):
+        # K3 패치 (v1.5.0): KIND 톤을 force_template·DRY_RUN 체크보다 먼저 시도.
+        # 근거: KIND 톤은 Claude/Gemini 인격 프롬프트로 매 호출 다른 출력을 생성하므로
+        #       B7 hash 충돌(동일 Gemini 출력 유사 위험) 우회 패치 적용 대상이 아님.
+        #       B7 force_template은 KIND 톤 실패 후 기존 AI 트윗 경로에만 적용.
+        if not _is_dry_run() and os.environ.get("KIND_TONE_ENABLED", "").lower() in (
+            "true", "1", "yes",
+        ):
             try:
                 from publishers.alert_formatter_kind import format_x_kind  # noqa: PLC0415
                 hashtags = _random.choice(_X_HASHTAG_POOL)
@@ -181,6 +182,10 @@ class AlertFormatter:
                     f"[AlertFormatter] KIND_TONE 예외 → 기존 흐름: "
                     f"{type(e).__name__}: {e}"
                 )
+
+        # KIND 톤 실패 후 경로: force_template(B7) 또는 DRY_RUN 시 템플릿 즉시 반환
+        if force_template or _is_dry_run():
+            return self._format_x_template(level, score, reasoning, top_news_titles)
 
         ai_msg = self._generate_ai_tweet(level, score, reasoning, top_news_titles)
         if ai_msg:
@@ -197,20 +202,22 @@ class AlertFormatter:
     ) -> str:
         """
         제목: 기존 템플릿 방식 메시지 생성
-        내용: DRY_RUN=true 또는 AI 실패 시 fallback.
-              v1.0.0 format_x() 로직 이관, 동작 변경 없음.
+        내용: KIND 톤 실패 또는 DRY_RUN=true 시 fallback.
+              v1.5.0: 슬라이싱 확대 + 해시태그 보존 처리.
         """
         meta = LEVEL_META.get(level, LEVEL_META["L3"])
         prefix = meta["x_prefix"]
 
-        # 제목: reasoning 요약 (100자 제한)
-        reason_short = reasoning[:100].split("\n")[0]
+        # v1.5.0: 첫 줄 기준 200자 (기존 100자 제한 제거 — 전달력 개선)
+        reason_short = reasoning.split("\n")[0][:200]
 
-        # 제목: 상위 뉴스 제목 1건 (B6 패치 v1.3.0: 다양성 — 상위 3개 중 랜덤)
+        # v1.5.0: 슬라이싱 제거 — 제목 원문 전체 사용
+        # (기존 [:60]+"..." 방식은 제목이 중간에 잘려 전달력 저하)
+        # B6 패치 (v1.3.0): 다양성 — 상위 3개 중 랜덤
         top_news = ""
         if top_news_titles:
             pool = top_news_titles[:3]
-            top_news = _random.choice(pool)[:60] + "..."
+            top_news = _random.choice(pool)
 
         # B3 패치 (v1.2.0): _X_HASHTAG_POOL 활용 — 안티봇 정책
         hashtags = _random.choice(_X_HASHTAG_POOL)
@@ -225,9 +232,13 @@ class AlertFormatter:
 
         message = "\n".join(body_parts)
 
-        # 제목: 280자 초과 시 절단
+        # v1.5.0: X_MAX_LENGTH 초과 시 해시태그 보존 후 앞부분 trim
+        # (기존 message[:X_MAX_LENGTH]는 해시태그가 중간에 잘리는 문제 발생)
         if len(message) > X_MAX_LENGTH:
-            message = message[:X_MAX_LENGTH]
+            footer = f"\n{hashtags}"
+            available = X_MAX_LENGTH - len(footer)
+            body_without_hashtags = "\n".join(body_parts[:-1])
+            message = body_without_hashtags[:available] + footer
 
         return message
 
