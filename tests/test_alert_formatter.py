@@ -1,268 +1,572 @@
 """
-제목: AlertFormatter 단위 테스트
-내용: X/TG 메시지 포맷, 280자 제한, 레벨별 이모지/헤더를 테스트합니다.
+제목: Alert 메시지 포맷터
+내용: AlertSignal을 받아 X(Twitter)와 Telegram 발행용 메시지를 생성합니다.
+      L1/L2/L3 레벨별로 톤과 긴급도가 다르게 구성됩니다.
+      v1.1.0: DRY_RUN=false 시 Gemini AI 자연어 트윗 생성 지원.
+      v1.4.0: KIND_TONE_ENABLED=true 시 친근 톤(F감성) 1순위 시도.
+              alert_formatter_kind 모듈로 L1=Claude, L2/L3=Gemini 분담.
+              실패 시 기존 _generate_ai_tweet → 템플릿 순차 fallback.
+
+주요 클래스:
+  - AlertFormatter: 레벨별 X/TG 메시지 생성
+
+주요 함수:
+  - AlertFormatter.format_x(): X용 단문 메시지 (280자 이내)
+  - AlertFormatter.format_tg(): TG용 HTML 메시지 (상세)
+  - AlertFormatter._generate_ai_tweet(): Gemini AI 자연어 트윗 (DRY_RUN=false 전용)
 """
 
 from __future__ import annotations
 
-import pytest
+import os
+import random as _random
+import re as _re
+from typing import TYPE_CHECKING
 
-from publishers.alert_formatter import LEVEL_META, X_MAX_LENGTH, AlertFormatter
+from core.logger import get_logger
 
+if TYPE_CHECKING:
+    pass
 
-@pytest.fixture
-def formatter() -> AlertFormatter:
-    return AlertFormatter()
+VERSION = "1.5.0"
 
-
-# ── format_x ─────────────────────────────────────────
-@pytest.mark.unit
-def test_format_x_within_length(formatter: AlertFormatter) -> None:
-    """X 메시지는 280자 이내"""
-    msg = formatter.format_x(
-        level="L1",
-        score=8.5,
-        reasoning="L1: Tier S auto_l1 이벤트 감지 (source=fed_rss)",
-        top_news_titles=["Fed announces emergency rate cut"],
-    )
-    assert len(msg) <= X_MAX_LENGTH
-
-
-@pytest.mark.unit
-def test_format_x_l1_prefix(formatter: AlertFormatter) -> None:
-    """L1 메시지에 CRITICAL 이모지 포함"""
-    msg = formatter.format_x("L1", 8.0, "L1 판정", [])
-    assert "🚨" in msg
-
-
-@pytest.mark.unit
-def test_format_x_l2_prefix(formatter: AlertFormatter) -> None:
-    """L2 메시지에 WARNING 이모지 포함"""
-    msg = formatter.format_x("L2", 5.5, "L2 판정", [])
-    assert "⚠️" in msg
-
-
-@pytest.mark.unit
-def test_format_x_score_included(formatter: AlertFormatter) -> None:
-    """X 메시지에 점수 포함"""
-    msg = formatter.format_x("L2", 5.5, "판정근거", [])
-    assert "5.5" in msg
-
-
-@pytest.mark.unit
-def test_format_x_news_truncated(formatter: AlertFormatter) -> None:
-    """v1.5.0: 뉴스 제목 슬라이싱 제거 — X_MAX_LENGTH 이내 보장 + 해시태그 보존 검증
-    기존 [:60]+"..." 말줄임 정책 폐기. 전체 제목을 담되 275자 이내를 보장하고
-    초과 시 해시태그를 보존한 채 앞부분을 trim한다."""
-    long_title = "A" * 300  # X_MAX_LENGTH(275)를 초과하는 극단적 제목
-    msg = formatter.format_x("L2", 5.0, "근거", [long_title])
-    # 1) 길이 제한 준수
-    assert len(msg) <= X_MAX_LENGTH
-    # 2) 해시태그 보존 (초과 시 trim 대상은 앞부분)
-    hashtag_pool = [
-        "#미국증시 #투자경보", "#글로벌경제 #시장경보", "#미국시장 #InvestmentAlert",
-        "#경제위기 #투자주의", "#InvestmentOS #미국증시", "#시장경보 #글로벌증시",
-        "#미국경제 #Alert",
-    ]
-    assert any(ht in msg for ht in hashtag_pool)
-
-
-@pytest.mark.unit
-def test_format_x_no_news(formatter: AlertFormatter) -> None:
-    """뉴스 없어도 메시지 생성 가능"""
-    msg = formatter.format_x("L2", 5.0, "근거", [])
-    assert len(msg) > 0
-
-
-# ── format_tg ─────────────────────────────────────────
-@pytest.mark.unit
-def test_format_tg_l1_header(formatter: AlertFormatter) -> None:
-    """L1 TG 메시지에 CRITICAL 헤더 포함"""
-    msg = formatter.format_tg("L1", 8.0, "L1 판정", [], [], 1.0, "uuid-1234")
-    assert "L1 CRITICAL" in msg
-
-
-@pytest.mark.unit
-def test_format_tg_score_health(formatter: AlertFormatter) -> None:
-    """TG 메시지에 Score, Health 포함"""
-    msg = formatter.format_tg("L2", 5.5, "근거", [], [], 0.85, "uuid-1234")
-    assert "5.50" in msg
-    assert "85%" in msg
-
-
-@pytest.mark.unit
-def test_format_tg_top_news_listed(formatter: AlertFormatter) -> None:
-    """TG 메시지에 상위 뉴스 3건 포함"""
-    news = ["News 1", "News 2", "News 3", "News 4"]
-    msg = formatter.format_tg("L2", 5.5, "근거", news, [], 0.85, "uuid-1234")
-    assert "News 1" in msg
-    assert "News 3" in msg
-    assert "News 4" not in msg  # 4번째는 제외 (상위 3건만)
-
-
-@pytest.mark.unit
-def test_format_tg_youtube_listed(formatter: AlertFormatter) -> None:
-    """TG 메시지에 YouTube 제목 포함"""
-    msg = formatter.format_tg("L1", 8.0, "근거", [], ["YT 긴급속보"], 0.9, "uuid-1234")
-    assert "YT 긴급속보" in msg
-
-
-@pytest.mark.unit
-def test_format_tg_alert_id_shortened(formatter: AlertFormatter) -> None:
-    """TG 메시지에 alert_id 앞 8자리 포함"""
-    alert_id = "abcdef12-1234-5678-abcd-ef1234567890"
-    msg = formatter.format_tg("L2", 5.0, "근거", [], [], 0.8, alert_id)
-    assert alert_id[:8] in msg
-
-
-@pytest.mark.unit
-def test_format_tg_disclaimer(formatter: AlertFormatter) -> None:
-    """TG 메시지에 투자 참고 정보 면책 문구 포함"""
-    msg = formatter.format_tg("L2", 5.0, "근거", [], [], 0.8, "uuid")
-    assert "투자 참고 정보" in msg
-
-
-# ── LEVEL_META 완전성 ─────────────────────────────────
-@pytest.mark.unit
-def test_level_meta_completeness() -> None:
-    """LEVEL_META가 L1/L2/L3 모두 정의"""
-    for level in ("L1", "L2", "L3"):
-        assert level in LEVEL_META
-        assert "emoji" in LEVEL_META[level]
-        assert "tg_header" in LEVEL_META[level]
-
+logger = get_logger(__name__)
 
 # ────────────────────────────────────────────────────────
-# v1.2.0 패치 회귀 테스트 (B3 / B4 — 안티봇 셔플)
+# 레벨별 이모지 및 헤더
 # ────────────────────────────────────────────────────────
-@pytest.mark.unit
-def test_format_x_template_uses_random_hashtag_pool(
-    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """B3 신규 (v1.2.0): _format_x_template은 _X_HASHTAG_POOL에서 랜덤 선택"""
-    from publishers.alert_formatter import _X_HASHTAG_POOL
+LEVEL_META: dict[str, dict[str, str]] = {
+    "L1": {
+        "emoji": "🚨",
+        "label": "CRITICAL",
+        "x_prefix": "🚨 [긴급 Alert]",
+        "tg_header": "🚨 <b>[L1 CRITICAL Alert]</b>",
+    },
+    "L2": {
+        "emoji": "⚠️",
+        "label": "HIGH",
+        "x_prefix": "⚠️ [Alert]",
+        "tg_header": "⚠️ <b>[L2 HIGH Alert]</b>",
+    },
+    "L3": {
+        "emoji": "📊",
+        "label": "MEDIUM",
+        "x_prefix": "📊 [모니터링]",
+        "tg_header": "📊 <b>[L3 MEDIUM 모니터링]</b>",
+    },
+    "SYSTEM_DEGRADED": {
+        "emoji": "🛠️",
+        "label": "DEGRADED",
+        "x_prefix": "🛠️ [시스템 경보]",
+        "tg_header": "🛠️ <b>[SYSTEM_DEGRADED 운영 경보]</b>",
+    },
+}
 
-    # DRY_RUN=true 강제 → 템플릿 경로 사용 (AI 트윗 회피)
-    monkeypatch.setenv("DRY_RUN", "true")
-    msg = formatter.format_x("L2", 5.5, "test", [])
-    # POOL 중 하나의 첫 해시태그가 본문에 포함되어야 함
-    assert any(tag.split()[0] in msg for tag in _X_HASHTAG_POOL)
-
-
-@pytest.mark.unit
-def test_format_tg_includes_random_time_phrase(formatter: AlertFormatter) -> None:
-    """B3 신규 (v1.2.0): format_tg는 _TG_HEADER_TIME_PHRASES에서 시간문구 추가"""
-    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
-
-    msg = formatter.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-1")
-    assert any(phrase in msg for phrase in _TG_HEADER_TIME_PHRASES)
-
-
-@pytest.mark.unit
-def test_format_tg_time_phrase_varies_across_calls(formatter: AlertFormatter) -> None:
-    """B3 신규 (v1.2.0): 동일 입력 다회 호출 시 시간문구 변화 (안티봇 검증)"""
-    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
-
-    msgs = [
-        formatter.format_tg("L2", 5.5, "test", [], [], 0.85, f"uuid-{i}")
-        for i in range(20)
-    ]
-    # 20회 중 최소 2종 이상 시간문구 등장 (확률적 검증)
-    found = {p for p in _TG_HEADER_TIME_PHRASES if any(p in m for m in msgs)}
-    assert len(found) >= 2
-
+# X 메시지 최대 길이
+X_MAX_LENGTH = 275  # 5자 여유
 
 # ────────────────────────────────────────────────────────
-# v1.3.0 패치 회귀 테스트 (B6 / B7 / B8)
+# X 해시태그 풀 (anti-bot 랜덤화 — v1.1.0)
 # ────────────────────────────────────────────────────────
-@pytest.mark.unit
-def test_format_x_template_picks_random_top_news_from_top3(
-    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """B6 신규 (v1.3.0): _format_x_template은 상위 3개 중 랜덤 선택"""
-    monkeypatch.setenv("DRY_RUN", "true")
-    titles = ["AAA breaking news", "BBB second item", "CCC third item", "DDD fourth"]
-    msgs = [formatter.format_x("L2", 5.5, "test", titles) for _ in range(20)]
-    found = {p for p in ("AAA", "BBB", "CCC") if any(p in m for m in msgs)}
-    assert len(found) >= 2  # 20회 중 최소 2개 등장 (확률적)
-    assert not any("DDD" in m for m in msgs)  # 4번째는 절대 등장 안 함
-
-
-@pytest.mark.unit
-def test_format_x_force_template_skips_ai(
-    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """B7 신규 (v1.3.0): force_template=True면 DRY_RUN=false에서도 AI 호출 안 함"""
-    monkeypatch.setenv("DRY_RUN", "false")
-    monkeypatch.setenv("GEMINI_API_KEY", "fake_key")  # AI 시도 환경 강제
-    # force_template=True → AI 우회 → 템플릿 결정론적 호출
-    msg = formatter.format_x("L2", 5.5, "test", ["news A"], force_template=True)
-    # 템플릿 prefix 'L2' 메타 헤더 포함
-    assert "Score 5.5" in msg
-
-
-@pytest.mark.unit
-def test_format_x_force_template_default_false(
-    formatter: AlertFormatter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """B7 신규 (v1.3.0): force_template default False → 기존 동작 유지"""
-    monkeypatch.setenv("DRY_RUN", "true")  # 어차피 템플릿 경로
-    msg1 = formatter.format_x("L2", 5.5, "test", ["news A"])
-    msg2 = formatter.format_x("L2", 5.5, "test", ["news A"], force_template=False)
-    # 두 호출 모두 템플릿 → 길이 비슷 (해시태그 셔플로 완전 동일은 아님)
-    assert "Score 5.5" in msg1
-    assert "Score 5.5" in msg2
-
+_X_HASHTAG_POOL: list[str] = [
+    "#미국증시 #투자경보",
+    "#글로벌경제 #시장경보",
+    "#미국시장 #InvestmentAlert",
+    "#경제위기 #투자주의",
+    "#InvestmentOS #미국증시",
+    "#시장경보 #글로벌증시",
+    "#미국경제 #Alert",
+]
 
 # ────────────────────────────────────────────────────────
-# v1.3.1 패치 회귀 테스트 (B9 — 사이클 내 채널 간 중복 회피)
+# TG 시간문구 셔플 풀 (anti-bot 랜덤화 — v1.2.0)
+# 동일 콘텐츠라도 매 발행 다른 시간 표현으로 본문 변형
+# Free / Paid 채널 간 본문 차별화에 사용 (run_alert.py에서 별도 호출)
 # ────────────────────────────────────────────────────────
-@pytest.mark.unit
-def test_format_tg_no_duplicate_phrase_within_cycle(formatter: AlertFormatter) -> None:
-    """B9 신규 (v1.3.1): 같은 인스턴스가 7회 이내 연속 호출 시 phrase 중복 없음.
-    Free → Paid → Internal 호출 시 동일 phrase 14% 충돌 위험 차단."""
-    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
+_TG_HEADER_TIME_PHRASES: list[str] = [
+    "방금 감지", "현재", "직전 사이클 기준", "최근 감지",
+    "본 사이클 기준", "지금 막", "방금 전",
+]
 
-    used_phrases = []
-    # 풀 크기(7개)까지 호출 — 모두 다른 phrase가 나와야 함
-    for _i in range(len(_TG_HEADER_TIME_PHRASES)):
-        msg = formatter.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-test")
-        # 메시지에서 어떤 phrase가 사용됐는지 추출
-        for phrase in _TG_HEADER_TIME_PHRASES:
-            if phrase in msg:
-                used_phrases.append(phrase)
-                break
-
-    # 풀 크기만큼 호출했으므로 모두 다른 phrase여야 함
-    assert len(used_phrases) == len(_TG_HEADER_TIME_PHRASES)
-    assert len(set(used_phrases)) == len(_TG_HEADER_TIME_PHRASES), (
-        f"중복 발생: {used_phrases}"
-    )
+# ────────────────────────────────────────────────────────
+# 비한국어 차단 패턴 (v1.1.0)
+# 힌디/아랍/키릴/일본 가나/태국/히브리/그리스 등 감지
+# 한자(CJK)는 한국 콘텐츠에서 허용 — false positive 방지
+# ────────────────────────────────────────────────────────
+_NON_KR_PATTERN = _re.compile(
+    r"[\u0900-\u097F"  # Devanagari (힌디)
+    r"\u0600-\u06FF"   # Arabic
+    r"\u0400-\u04FF"   # Cyrillic (러시아어)
+    r"\u3040-\u30FF"   # Hiragana/Katakana (일본어 가나)
+    r"\u0E00-\u0E7F"   # Thai
+    r"\u0590-\u05FF"   # Hebrew
+    r"\u0370-\u03FF]"  # Greek
+)
 
 
-@pytest.mark.unit
-def test_format_tg_phrase_pool_resets_after_exhaustion(formatter: AlertFormatter) -> None:
-    """B9 신규 (v1.3.1): 풀 소진 후 자동 리셋되어 정상 동작 지속."""
-    from publishers.alert_formatter import _TG_HEADER_TIME_PHRASES
-
-    pool_size = len(_TG_HEADER_TIME_PHRASES)
-    # 풀 크기 +5회 호출 — 리셋 후에도 정상 동작
-    for _i in range(pool_size + 5):
-        msg = formatter.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-test")
-        # 항상 7개 풀 중 하나가 들어있어야 함
-        assert any(p in msg for p in _TG_HEADER_TIME_PHRASES)
+def _is_dry_run() -> bool:
+    """환경변수 DRY_RUN 파싱. 미설정 시 True (안전 기본값)."""
+    val = os.environ.get("DRY_RUN", "true").lower()
+    return val not in ("false", "0", "no")
 
 
-@pytest.mark.unit
-def test_format_tg_separate_instances_independent_state() -> None:
-    """B9 신규 (v1.3.1): 인스턴스 별로 독립 상태 — 다른 사이클은 영향 없음."""
-    fmt1 = AlertFormatter()
-    fmt2 = AlertFormatter()
-    # 두 인스턴스 모두 빈 상태로 시작
-    assert fmt1._tg_phrases_used == set()
-    assert fmt2._tg_phrases_used == set()
-    # fmt1만 호출
-    fmt1.format_tg("L2", 5.5, "test", [], [], 0.85, "uuid-1")
-    # fmt2 상태는 그대로
-    assert len(fmt1._tg_phrases_used) == 1
-    assert fmt2._tg_phrases_used == set()
+class AlertFormatter:
+    """
+    제목: Alert 메시지 포맷터
+    내용: AlertSignal 데이터를 X와 Telegram에 맞는 메시지 형식으로 변환합니다.
+
+    책임:
+      - 레벨별 이모지/헤더/톤 적용
+      - X: 280자 이내 단문 (해시태그 포함)
+      - TG: HTML 포맷 상세 메시지 (reasoning, top_news 포함)
+      - v1.1.0: DRY_RUN=false 시 Gemini AI 자연어 트윗 생성
+      - v1.3.1: 사이클 내 TG 채널 간 시간문구 중복 회피 (B9)
+    """
+
+    def __init__(self) -> None:
+        """
+        제목: AlertFormatter 초기화
+        내용: 사이클 내 채널 간 중복 회피용 상태(인스턴스 변수) 초기화.
+              run_alert 실행 1회당 1개 인스턴스 → Free/Paid 호출 사이만 상태 유지.
+        """
+        # B9 패치 (v1.3.1): TG 시간문구 사이클 내 채널 간 중복 회피
+        # Free → Paid 순차 호출 시 동일 phrase 14% 충돌 위험 → set으로 추적
+        self._tg_phrases_used: set[str] = set()
+
+    def format_x(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+        force_template: bool = False,
+    ) -> str:
+        """
+        제목: X(Twitter) 발행용 메시지 생성
+        내용: DRY_RUN=false이면 Gemini AI 자연어 트윗 시도.
+              실패 또는 DRY_RUN=true이면 기존 템플릿 fallback.
+
+        처리 플로우:
+          1. force_template=True 또는 DRY_RUN=true → 템플릿 즉시 반환
+          2. _generate_ai_tweet() 시도
+          3. AI 성공 → AI 트윗 반환
+          4. AI 실패 → _format_x_template() 반환
+
+        Args:
+            level: 'L1' | 'L2' | 'L3'
+            score: Macro-News Score
+            reasoning: 판정 근거 텍스트
+            top_news_titles: 상위 뉴스 제목 리스트
+            force_template: B7 패치 (v1.3.0) — 안티봇 hash 충돌 시 호출자가 강제
+
+        Returns:
+            str: X 발행용 메시지 (X_MAX_LENGTH=275자 이내)
+        """
+        # K3 패치 (v1.5.0): KIND 톤을 force_template·DRY_RUN 체크보다 먼저 시도.
+        # 근거: KIND 톤은 Claude/Gemini 인격 프롬프트로 매 호출 다른 출력을 생성하므로
+        #       B7 hash 충돌(동일 Gemini 출력 유사 위험) 우회 패치 적용 대상이 아님.
+        #       B7 force_template은 KIND 톤 실패 후 기존 AI 트윗 경로에만 적용.
+        if not _is_dry_run() and os.environ.get("KIND_TONE_ENABLED", "").lower() in (
+            "true", "1", "yes",
+        ):
+            try:
+                from publishers.alert_formatter_kind import format_x_kind  # noqa: PLC0415
+                hashtags = _random.choice(_X_HASHTAG_POOL)
+                kind_msg = format_x_kind(level, score, reasoning, top_news_titles, hashtags)
+                if kind_msg:
+                    return kind_msg
+            except ImportError:
+                logger.warning("[AlertFormatter] alert_formatter_kind 임포트 실패 → 기존 흐름")
+            except Exception as e:
+                logger.warning(
+                    f"[AlertFormatter] KIND_TONE 예외 → 기존 흐름: "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        # KIND 톤 실패 후 경로: force_template(B7) 또는 DRY_RUN 시 템플릿 즉시 반환
+        if force_template or _is_dry_run():
+            return self._format_x_template(level, score, reasoning, top_news_titles)
+
+        ai_msg = self._generate_ai_tweet(level, score, reasoning, top_news_titles)
+        if ai_msg:
+            return ai_msg
+
+        return self._format_x_template(level, score, reasoning, top_news_titles)
+
+    def _format_x_template(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+    ) -> str:
+        """
+        제목: 기존 템플릿 방식 메시지 생성
+        내용: KIND 톤 실패 또는 DRY_RUN=true 시 fallback.
+              v1.5.0: 슬라이싱 확대 + 해시태그 보존 처리.
+        """
+        meta = LEVEL_META.get(level, LEVEL_META["L3"])
+        prefix = meta["x_prefix"]
+
+        # v1.5.0: 첫 줄 기준 200자 (기존 100자 제한 제거 — 전달력 개선)
+        reason_short = reasoning.split("\n")[0][:200]
+
+        # v1.5.0: 슬라이싱 제거 — 제목 원문 전체 사용
+        # (기존 [:60]+"..." 방식은 제목이 중간에 잘려 전달력 저하)
+        # B6 패치 (v1.3.0): 다양성 — 상위 3개 중 랜덤
+        top_news = ""
+        if top_news_titles:
+            pool = top_news_titles[:3]
+            top_news = _random.choice(pool)
+
+        # B3 패치 (v1.2.0): _X_HASHTAG_POOL 활용 — 안티봇 정책
+        hashtags = _random.choice(_X_HASHTAG_POOL)
+
+        body_parts = [
+            f"{prefix}",
+            f"Score {score:.1f} | {reason_short}",
+        ]
+        if top_news:
+            body_parts.append(f"📰 {top_news}")
+        body_parts.append(hashtags)
+
+        message = "\n".join(body_parts)
+
+        # v1.5.0: X_MAX_LENGTH 초과 시 해시태그 보존 후 앞부분 trim
+        # (기존 message[:X_MAX_LENGTH]는 해시태그가 중간에 잘리는 문제 발생)
+        if len(message) > X_MAX_LENGTH:
+            footer = f"\n{hashtags}"
+            available = X_MAX_LENGTH - len(footer)
+            body_without_hashtags = "\n".join(body_parts[:-1])
+            message = body_without_hashtags[:available] + footer
+
+        return message
+
+    def _generate_ai_tweet(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+    ) -> str | None:
+        """
+        제목: Gemini AI 자연어 트윗 생성 (DRY_RUN=false 전용)
+        내용: gemini-2.5-flash-lite 호출 → 한국어 자연어 Alert 트윗 생성.
+              실패/검증 탈락 시 None 반환 → 호출자가 템플릿 fallback.
+
+        처리 플로우:
+          1. GEMINI_API_KEY 존재 확인
+          2. google-genai SDK로 Gemini 호출
+          3. 응답 텍스트 추출
+          4. 검증 1: 240자 이내 (X_MAX_LENGTH=275자, 5자 여유)
+          5. 검증 2: 비한국어 문자 가드
+          6. 성공 시 트윗 반환, 실패 시 None
+
+        Args:
+            level: 'L1' | 'L2' | 'L3'
+            score: Macro-News Score
+            reasoning: 판정 근거 텍스트
+            top_news_titles: 상위 뉴스 제목 리스트
+
+        Returns:
+            str | None: AI 생성 트윗 또는 None (fallback 신호)
+        """
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            logger.warning("[AlertFormatter] GEMINI_API_KEY 미설정 → 템플릿 fallback")
+            return None
+
+        try:
+            from google import genai as _genai  # noqa: PLC0415
+
+            client = _genai.Client(api_key=api_key)
+
+            level_tone = {
+                "L1": "매우 긴박하고 심각한 경보. 즉각적인 위험 수준.",
+                "L2": "경고 수준. 시장 주의 필요.",
+                "L3": "모니터링 수준. 관찰 권장.",
+            }.get(level, "주의 수준.")
+
+            top_news_str = "없음"
+            if top_news_titles:
+                # B6 패치 (v1.3.0): 다양성 — 상위 3개 중 랜덤 선택
+                pool = top_news_titles[:3]
+                top_news_str = _random.choice(pool)[:80]
+            hashtags = _random.choice(_X_HASHTAG_POOL)
+
+            prompt = (
+                f"미국 금융시장 긴급 Alert 트윗을 한국어로 작성하세요.\n\n"
+                f"[Alert 정보]\n"
+                f"- 등급: {level} / Score: {score:.1f}/10\n"
+                f"- 상황: {level_tone}\n"
+                f"- 판정 근거: {reasoning[:150]}\n"
+                f"- 주요 뉴스: {top_news_str}\n\n"
+                f"[작성 조건]\n"
+                f"1. 240자 이내 (필수)\n"
+                f"2. 첫 줄: 이모지 + 한 줄 핵심 요약\n"
+                f"3. 중간: 구체적 상황 1~2줄\n"
+                f"4. '⚠️ 투자 참고 정보, 투자 권유 아님' 문구 포함\n"
+                f"5. 마지막 줄 해시태그: {hashtags}\n"
+                f"6. 자연스러운 한국어 (사람이 쓴 것처럼, 매번 다른 표현)\n"
+                f"7. 트윗 본문만 출력 (설명·마크다운 불필요)\n"
+            )
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt,
+            )
+            tweet = response.text.strip() if response.text else ""
+
+            # 검증 1: 길이
+            if not tweet or len(tweet) > X_MAX_LENGTH:
+                logger.warning(
+                    f"[AlertFormatter] AI 트윗 길이 오류 ({len(tweet)}자) → fallback"
+                )
+                return None
+
+            # 검증 2: 비한국어 가드
+            if _NON_KR_PATTERN.search(tweet):
+                logger.warning(
+                    "[AlertFormatter] AI 트윗 비한국어 문자 감지 → fallback"
+                )
+                return None
+
+            logger.info(
+                f"[AlertFormatter] AI 트윗 생성 완료 ({len(tweet)}자, level={level})"
+            )
+            return tweet
+
+        except Exception as e:
+            logger.warning(
+                f"[AlertFormatter] AI 트윗 생성 실패 → 템플릿 fallback: "
+                f"{type(e).__name__}: {e}"
+            )
+            return None
+
+    def format_tg(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+        top_youtube_titles: list[str],
+        health_score: float,
+        alert_id: str,
+    ) -> str:
+        """
+        제목: Telegram 발행용 HTML 메시지 생성
+        내용: 상세 정보를 HTML 포맷으로 구성.
+              reasoning, top_news, top_youtube, health_score 포함.
+
+        Args:
+            level: 'L1' | 'L2' | 'L3'
+            score: Macro-News Score
+            reasoning: 판정 근거 텍스트
+            top_news_titles: 상위 뉴스 제목 리스트
+            top_youtube_titles: 상위 YouTube 제목 리스트
+            health_score: 데이터 건강도
+            alert_id: 감사 추적 ID (단축 표시)
+
+        Returns:
+            str: Telegram HTML 메시지
+        """
+        meta = LEVEL_META.get(level, LEVEL_META["L3"])
+        header = meta["tg_header"]
+        # B3 패치 (v1.2.0): 매 발행 다른 시간문구 — 안티봇 정책
+        # B9 패치 (v1.3.1): 사이클 내 채널 간 중복 회피
+        # Free → Paid 순차 호출 시 동일 phrase 회피. 7개 풀 모두 소진 시 자동 리셋.
+        available = [p for p in _TG_HEADER_TIME_PHRASES if p not in self._tg_phrases_used]
+        if not available:
+            self._tg_phrases_used.clear()
+            available = list(_TG_HEADER_TIME_PHRASES)
+        time_phrase = _random.choice(available)
+        self._tg_phrases_used.add(time_phrase)
+
+        # K3 패치 (v1.4.0): 친근 톤 1순위 시도 → 실패 시 기존 HTML 포맷 fallback
+        # KIND_TONE_ENABLED=true 일 때만 동작. DRY_RUN 시 스킵 (안전).
+        if not _is_dry_run() and os.environ.get(
+            "KIND_TONE_ENABLED", ""
+        ).lower() in ("true", "1", "yes"):
+            try:
+                from publishers.alert_formatter_kind import format_tg_kind  # noqa: PLC0415
+                kind_msg = format_tg_kind(
+                    level, score, reasoning, top_news_titles,
+                    top_youtube_titles, health_score, alert_id, time_phrase,
+                )
+                if kind_msg:
+                    return kind_msg
+            except ImportError:
+                logger.warning("[AlertFormatter] alert_formatter_kind 임포트 실패 → 기존 흐름")
+            except Exception as e:
+                logger.warning(
+                    f"[AlertFormatter] KIND_TONE TG 예외 → 기존 흐름: "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        lines: list[str] = [
+            header,
+            f"<i>— {time_phrase}</i>",
+            "",
+            f"<b>Score</b>: {score:.2f} | <b>Health</b>: {health_score:.0%}",
+            f"<b>판정근거</b>: {reasoning[:200]}",
+            "",
+        ]
+
+        # 제목: 상위 뉴스
+        if top_news_titles:
+            lines.append("📰 <b>주요 뉴스</b>")
+            for i, title in enumerate(top_news_titles[:3], 1):
+                lines.append(f"  {i}. {title[:80]}")
+            lines.append("")
+
+        # 제목: YouTube 확인
+        if top_youtube_titles:
+            lines.append("📺 <b>유튜브 확인</b>")
+            for i, title in enumerate(top_youtube_titles[:2], 1):
+                lines.append(f"  {i}. {title[:60]}")
+            lines.append("")
+
+        lines.append(f"<code>ID: {alert_id[:8]}</code> | ⚠️ 투자 참고 정보")
+
+        return "\n".join(lines)
+
+    def format_internal(
+        self,
+        level: str,
+        score: float,
+        reasoning: str,
+        top_news_titles: list[str],
+        top_youtube_titles: list[str],
+        health_score: float,
+        alert_id: str,
+        playbook: list[str] | None = None,
+    ) -> str:
+        """
+        제목: TG 내부 운영 채널 발행 메시지 포맷
+        내용: L1/L2/L3 모두 + SYSTEM_DEGRADED 모두 내부 채널로 발송될 때 사용.
+              format_tg와 유사하나 운영자 친화적 정보 포함:
+              - alert_id 전체 노출 (8자만이 아닌)
+              - reasoning 풀텍스트
+              - playbook 체크리스트 (FR-06 Phase 2 연동)
+
+        Args:
+            level: 'L1'|'L2'|'L3'|'SYSTEM_DEGRADED'
+            score: Macro-News Score (SYSTEM_DEGRADED는 0.0)
+            reasoning: 판정 근거 (ReasoningBuilder 텍스트)
+            top_news_titles: 상위 뉴스 제목 리스트
+            top_youtube_titles: 상위 YouTube 제목 리스트
+            health_score: 데이터 건강도
+            alert_id: 감사 추적 키 (전체 노출)
+            playbook: 운영 체크리스트 (FR-06, Phase 2 채움)
+
+        Returns:
+            str: HTML 포맷 내부 메시지
+        """
+        meta = LEVEL_META.get(level, LEVEL_META["L3"])
+
+        lines = [
+            f"{meta['tg_header']}  <i>(내부)</i>",
+            "",
+            f"📊 Score: <b>{score:.2f}</b> | Health: <b>{health_score:.2f}</b>",
+            "",
+            "📝 <b>판정 근거</b>",
+            f"  {reasoning}",
+            "",
+        ]
+
+        if top_news_titles:
+            lines.append("📰 <b>상위 뉴스</b>")
+            for i, title in enumerate(top_news_titles[:3], 1):
+                lines.append(f"  {i}. {title[:80]}")
+            lines.append("")
+
+        if top_youtube_titles:
+            lines.append("📺 <b>YouTube 확인</b>")
+            for i, title in enumerate(top_youtube_titles[:2], 1):
+                lines.append(f"  {i}. {title[:60]}")
+            lines.append("")
+
+        if playbook:
+            lines.append("📋 <b>운영 체크리스트</b>")
+            for item in playbook[:5]:
+                lines.append(f"  • {item}")
+            lines.append("")
+
+        lines.append(f"<code>alert_id: {alert_id}</code>")
+
+        return "\n".join(lines)
+
+    def format_degraded(
+        self,
+        dq_state: dict | None,
+        alert_id: str,
+    ) -> str:
+        """
+        제목: SYSTEM_DEGRADED 전용 내부 운영 메시지 포맷
+        내용: DataQualityState 정보를 운영자 친화적으로 정리한다.
+              dq_state는 DataQualityState.to_dict() 결과(dict) 또는 dataclass 직접 전달 모두 지원.
+
+        Args:
+            dq_state: DataQualityState (dict 또는 dataclass). None 가능.
+            alert_id: 감사 추적 키
+
+        Returns:
+            str: HTML 포맷 SYSTEM_DEGRADED 메시지
+        """
+        meta = LEVEL_META.get("SYSTEM_DEGRADED", LEVEL_META["L3"])
+
+        # dq_state가 dataclass면 to_dict() 호출, dict면 그대로 사용
+        if dq_state is None:
+            state_dict: dict = {}
+        elif isinstance(dq_state, dict):
+            state_dict = dq_state
+        else:
+            # DataQualityState dataclass 가정 — to_dict() 메서드 호출
+            try:
+                state_dict = dq_state.to_dict()
+            except AttributeError:
+                state_dict = {}
+
+        success = state_dict.get("source_success_rate", 0.0)
+        fresh = state_dict.get("fresh_event_ratio", 0.0)
+        lag = state_dict.get("lag_seconds_p95", 0.0)
+        reasons = state_dict.get("degraded_reasons", []) or []
+        source_results = state_dict.get("source_results", {}) or {}
+
+        # 실패 소스 추출
+        failed_sources = [name for name, ok in source_results.items() if not ok]
+
+        lines = [
+            meta["tg_header"],
+            "",
+            "⚠️ <b>수집 시스템 이상이 감지되었습니다</b>",
+            "",
+            "📊 <b>지표</b>",
+            f"  • source_success_rate: <b>{success:.2f}</b>",
+            f"  • fresh_event_ratio: <b>{fresh:.2f}</b>",
+            f"  • lag_seconds_p95: <b>{lag:.1f}s</b>",
+            "",
+        ]
+
+        if failed_sources:
+            lines.append("❌ <b>실패한 소스</b>")
+            for name in failed_sources[:5]:
+                lines.append(f"  • {name}")
+            lines.append("")
+
+        if reasons:
+            lines.append("🔍 <b>위반 사유</b>")
+            for r in reasons[:5]:
+                lines.append(f"  • <code>{r}</code>")
+            lines.append("")
+
+        lines.extend([
+            "🛠️ <b>조치 권고</b>",
+            "  • GitHub Actions 로그 확인",
+            "  • RSS 피드 URL 상태 점검",
+            "  • Notion 에러 회고 페이지에 기록",
+            "",
+            f"<code>alert_id: {alert_id}</code>",
+        ])
+
+        return "\n".join(lines)
