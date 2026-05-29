@@ -39,6 +39,12 @@ jobs:
       TELEGRAM_PAID_CHANNEL_ID: ${{ secrets.TELEGRAM_PAID_CHANNEL_ID }}
       GEMINI_API_KEY : ${{ secrets.GEMINI_API_KEY }}
       SECTOR_KIND_TONE_ENABLED: ${{ vars.SECTOR_KIND_TONE_ENABLED }}
+      # ▼ 추가
+      KIND_TONE_ENABLED: ${{ vars.KIND_TONE_ENABLED }}
+      KIND_TONE_IMAGE_ENABLED: ${{ vars.KIND_TONE_IMAGE_ENABLED }}
+      IMAGE_PROVIDER: ${{ vars.IMAGE_PROVIDER }}
+      GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
     steps:
       - name: Checkout
