@@ -33,8 +33,10 @@ jobs:
       TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
       # cron 실행 시 DRY_RUN=false, workflow_dispatch 시 사용자 입력
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
-      # v2.0.0 (2026-05-23): true 시 PR 우회 + 직접 commit + 즉시 publish
-      AUTO_PUBLISH_ENABLED: ${{ vars.AUTO_PUBLISH_ENABLED }}
+      # 기본 발행 모드: true 시 PR 우회 + 직접 commit + 즉시 publish
+      AUTO_PUBLISH_ENABLED: ${{ vars.AUTO_PUBLISH_ENABLED || 'true' }}
+      # 백업 PR 흐름에서 자동 머지를 별도 제어 (기본 false: 수동 검수 PR)
+      AUTO_MERGE_DRAFT_PR: ${{ vars.AUTO_MERGE_DRAFT_PR || 'false' }}
 
     steps:
       - name: 🔄 Checkout
@@ -80,6 +82,32 @@ jobs:
           STATUS: Draft
         run: python -m publishers.weekly_news_x.notion_sync
         continue-on-error: true
+
+
+      - name: 🧪 Preflight direct publish secrets
+        id: direct_preflight
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true'
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+          X_SCREEN_NAME: ${{ secrets.X_SCREEN_NAME }}
+        run: |
+          set -euo pipefail
+          echo "[preflight] X 실발행 필수 Secret 점검"
+          missing=()
+          for key in X_API_KEY X_API_SECRET X_ACCESS_TOKEN X_ACCESS_TOKEN_SECRET X_SCREEN_NAME; do
+            if [ -z "${!key:-}" ]; then
+              missing+=("$key")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Direct publish 필수 Secret 누락: ${missing[*]}"
+            exit 1
+          fi
+          echo "✅ Direct publish Secret preflight 통과"
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       # ════════════════════════════════════════════════════════
       # v2.0.0 (2026-05-23): AUTO_PUBLISH_ENABLED 분기 — PR 우회
@@ -185,9 +213,9 @@ jobs:
           labels: weekly-news-draft
 
       # v1.4.0 신규 (2026-05-18): Auto-merge — validation 통과 시 PR 자동 머지
-      # v2.0.0 (2026-05-23): AUTO_PUBLISH_ENABLED=true 시 본 step skip
+      # v2.1.0: AUTO_MERGE_DRAFT_PR=true일 때만 실행되는 백업 경로로 격하
       - name: 🟢 Auto-merge PR (v1.4.0)
-        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED != 'true' && steps.pr.outputs.pull-request-url != ''
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED != 'true' && env.AUTO_MERGE_DRAFT_PR == 'true' && steps.pr.outputs.pull-request-url != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -212,6 +240,7 @@ jobs:
         env:
           DRY_RUN_INPUT: ${{ env.DRY_RUN }}
           AUTO_PUBLISH_INPUT: ${{ env.AUTO_PUBLISH_ENABLED }}
+          DIRECT_PREFLIGHT_OUTCOME: ${{ steps.direct_preflight.outcome }}
           ARCHIVE_PATH_INPUT: ${{ steps.collect.outputs.archive_path }}
           PR_URL_INPUT: ${{ steps.pr.outputs.pull-request-url }}
           PR_STEP_OUTCOME: ${{ steps.pr.outcome }}
@@ -229,11 +258,19 @@ jobs:
 
           # v2.0.0 (AUTO_PUBLISH_ENABLED=true) 분기
           if auto_publish and not dry_run:
+              preflight_outcome = os.environ.get('DIRECT_PREFLIGHT_OUTCOME', '')
               direct_committed = os.environ.get('DIRECT_COMMITTED', '') == 'true'
               direct_outcome = os.environ.get('DIRECT_PUBLISH_OUTCOME', '')
               thread_url = os.environ.get('DIRECT_THREAD_URL', '')
 
-              if not direct_committed:
+              if preflight_outcome == 'failure':
+                  from publishers.weekly_news_x.notifier import notify_draft_failure
+                  notify_draft_failure(
+                      stage='direct_preflight',
+                      error_msg='X 실발행 필수 Secret 누락으로 archive commit 전 발행 차단. Actions preflight 로그 확인 필요.',
+                      weekday=weekday,
+                  )
+              elif not direct_committed:
                   from publishers.weekly_news_x.notifier import notify_draft_failure
                   notify_draft_failure(
                       stage='direct_commit_skipped',
