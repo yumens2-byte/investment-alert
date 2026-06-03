@@ -9,6 +9,16 @@ concurrency:
   pull_request:
     types: [closed]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      archive_path:
+        description: '발행할 archive 경로 (예: logs/weekly_news/2026/06/2026-06-06-saturday.md)'
+        type: string
+        required: true
+      force_republish:
+        description: 'sidecar가 있어도 강제 재발행'
+        type: boolean
+        default: false
 
 permissions:
   # sidecar 자동 commit 위해 contents: write 필요
@@ -17,10 +27,11 @@ permissions:
 jobs:
   publish:
     name: Publish Thread to X
-    # PR이 'merged' && 'weekly-news-draft' 라벨 보유일 때만 실행
+    # PR merge 이벤트 또는 수동 workflow_dispatch일 때 실행
     if: >
-      github.event.pull_request.merged == true &&
-      contains(github.event.pull_request.labels.*.name, 'weekly-news-draft')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'weekly-news-draft'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -61,38 +72,60 @@ jobs:
         run: pip install openai
 
       # D2 패치 (2026-05-17): git diff 기반 archive 명시 추출
-      # 도입 배경: 기존 find_latest_archive()는 mtime 의존 — checkout으로 mtime 통일 시
-      #            토/일 archive 충돌 가능. PR이 추가/수정한 .md만 정확히 선택.
-      # 정책: 1 PR = 1 archive 권장이나 ≥2개도 mtime 최신 사용 (운영가이드 Q2 호환)
-      - name: 🔍 Detect archive path from PR diff
+      # v2.1.0: workflow_dispatch 수동 운영 테스트/재발행 경로 추가
+      - name: 🔍 Resolve archive path
         id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ARCHIVE_PATH_INPUT: ${{ github.event.inputs.archive_path }}
         run: |
           set -euo pipefail
-          CHANGED_MD_LIST=$(git diff --name-only HEAD~1 HEAD \
-            | grep '^logs/weekly_news/.*\.md$' \
-            | grep -v '\.meta\.json$' || true)
-          CHANGED_COUNT=$(printf '%s\n' "$CHANGED_MD_LIST" | grep -c . || true)
-          echo "변경된 archive .md 수: ${CHANGED_COUNT}"
-          if [ "$CHANGED_COUNT" -eq 0 ]; then
-            echo "❌ PR에 archive .md 변경 없음 — 발행 불가"
-            exit 1
-          elif [ "$CHANGED_COUNT" -gt 1 ]; then
-            echo "⚠️ PR에 archive .md ${CHANGED_COUNT}개 변경 — mtime 최신 1개만 사용"
-            PICKED=$(printf '%s\n' "$CHANGED_MD_LIST" \
-              | xargs -I{} stat -c '%Y %n' "{}" \
-              | sort -rn | head -1 | awk '{print $2}')
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            PICKED="$ARCHIVE_PATH_INPUT"
+            if [ -z "$PICKED" ]; then
+              echo "❌ archive_path input 누락"
+              exit 1
+            fi
+            case "$PICKED" in
+              logs/weekly_news/*.md) ;;
+              *)
+                echo "❌ archive_path는 logs/weekly_news/ 하위 .md 파일이어야 함: $PICKED"
+                exit 1
+                ;;
+            esac
+            if [ ! -f "$PICKED" ]; then
+              echo "❌ archive 파일 없음: $PICKED"
+              exit 1
+            fi
           else
-            PICKED="$CHANGED_MD_LIST"
+            # PR merge 경로: PR이 추가/수정한 .md만 정확히 선택.
+            CHANGED_MD_LIST=$(git diff --name-only HEAD~1 HEAD \
+              | grep '^logs/weekly_news/.*\.md$' \
+              | grep -v '\.meta\.json$' || true)
+            CHANGED_COUNT=$(printf '%s\n' "$CHANGED_MD_LIST" | grep -c . || true)
+            echo "변경된 archive .md 수: ${CHANGED_COUNT}"
+            if [ "$CHANGED_COUNT" -eq 0 ]; then
+              echo "❌ PR에 archive .md 변경 없음 — 발행 불가"
+              exit 1
+            elif [ "$CHANGED_COUNT" -gt 1 ]; then
+              echo "⚠️ PR에 archive .md ${CHANGED_COUNT}개 변경 — mtime 최신 1개만 사용"
+              PICKED=$(printf '%s\n' "$CHANGED_MD_LIST" \
+                | xargs -I{} stat -c '%Y %n' "{}" \
+                | sort -rn | head -1 | awk '{print $2}')
+            else
+              PICKED="$CHANGED_MD_LIST"
+            fi
           fi
+
           echo "✅ Selected: $PICKED"
           echo "archive_path=$PICKED" >> "$GITHUB_OUTPUT"
-
       - name: 🐦 Publish thread to X
         id: publish
         env:
           ATTACH_IMAGE: ${{ vars.ATTACH_IMAGE }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          FORCE_REPUBLISH: ${{ vars.FORCE_REPUBLISH }}
+          FORCE_REPUBLISH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_republish || vars.FORCE_REPUBLISH }}
           ARCHIVE_PATH: ${{ steps.detect.outputs.archive_path }}
         run: python -m publishers.weekly_news_x.publish
 
