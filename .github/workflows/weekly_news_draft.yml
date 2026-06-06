@@ -135,9 +135,19 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           # archive 변경 확인
+          SIDECAR_PATH="${ARCHIVE_PATH_INPUT}.meta.json"
           if [ -z "$(git status --porcelain "${ARCHIVE_PATH_INPUT}")" ]; then
             echo "::warning::archive 변경 없음 — main에 이미 동일 내용 존재 가능"
             echo "committed=false" >> "$GITHUB_OUTPUT"
+            if [ -f "${SIDECAR_PATH}" ]; then
+              echo "[direct-commit] 기존 sidecar 확인: ${SIDECAR_PATH} — 이미 발행된 archive로 판단"
+              echo "publish_ready=false" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=already_published_sidecar_exists" >> "$GITHUB_OUTPUT"
+            else
+              echo "[direct-commit] sidecar 없음: ${SIDECAR_PATH} — commit 없이 발행 단계로 복구 진행"
+              echo "publish_ready=true" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=archive_unchanged_sidecar_missing" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 
@@ -146,10 +156,12 @@ jobs:
           git push origin main
           echo "✅ archive main 직접 commit 완료"
           echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "publish_ready=true" >> "$GITHUB_OUTPUT"
+          echo "skip_reason=" >> "$GITHUB_OUTPUT"
 
       - name: 🐦 Publish thread to X (v2.0.0 direct)
         id: direct_publish
-        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true' && steps.direct_commit.outputs.committed == 'true'
+        if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true' && steps.direct_commit.outputs.publish_ready == 'true'
         env:
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
@@ -245,6 +257,8 @@ jobs:
           PR_URL_INPUT: ${{ steps.pr.outputs.pull-request-url }}
           PR_STEP_OUTCOME: ${{ steps.pr.outcome }}
           DIRECT_COMMITTED: ${{ steps.direct_commit.outputs.committed }}
+          DIRECT_PUBLISH_READY: ${{ steps.direct_commit.outputs.publish_ready }}
+          DIRECT_SKIP_REASON: ${{ steps.direct_commit.outputs.skip_reason }}
           DIRECT_PUBLISH_OUTCOME: ${{ steps.direct_publish.outcome }}
           DIRECT_THREAD_URL: ${{ steps.direct_publish.outputs.thread_url }}
           WEEKDAY_INPUT: ${{ steps.collect.outputs.weekday }}
@@ -260,6 +274,8 @@ jobs:
           if auto_publish and not dry_run:
               preflight_outcome = os.environ.get('DIRECT_PREFLIGHT_OUTCOME', '')
               direct_committed = os.environ.get('DIRECT_COMMITTED', '') == 'true'
+              publish_ready = os.environ.get('DIRECT_PUBLISH_READY', '') == 'true'
+              skip_reason = os.environ.get('DIRECT_SKIP_REASON', '')
               direct_outcome = os.environ.get('DIRECT_PUBLISH_OUTCOME', '')
               thread_url = os.environ.get('DIRECT_THREAD_URL', '')
 
@@ -270,13 +286,22 @@ jobs:
                       error_msg='X 실발행 필수 Secret 누락으로 archive commit 전 발행 차단. Actions preflight 로그 확인 필요.',
                       weekday=weekday,
                   )
-              elif not direct_committed:
-                  from publishers.weekly_news_x.notifier import notify_draft_failure
-                  notify_draft_failure(
-                      stage='direct_commit_skipped',
-                      error_msg='archive 변경 없음 — main에 이미 동일 내용 존재 가능. 발행 차단.',
-                      weekday=weekday,
-                  )
+              elif not direct_committed and not publish_ready:
+                  if skip_reason == 'already_published_sidecar_exists':
+                      from publishers.weekly_news_x.notifier import notify_draft_created
+                      notify_draft_created(
+                          archive_path=archive_path,
+                          pr_url='(skip: archive와 sidecar가 이미 존재하여 중복 발행 방지)',
+                          weekday=weekday,
+                          dry_run=True,
+                      )
+                  else:
+                      from publishers.weekly_news_x.notifier import notify_draft_failure
+                      notify_draft_failure(
+                          stage='direct_commit_skipped',
+                          error_msg=f'archive 변경 없음 및 publish_ready=false (reason={skip_reason}). 발행 차단.',
+                          weekday=weekday,
+                      )
               elif direct_outcome == 'failure':
                   from publishers.weekly_news_x.notifier import notify_draft_failure
                   notify_draft_failure(
