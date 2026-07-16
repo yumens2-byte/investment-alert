@@ -45,6 +45,9 @@ COOLDOWN_MINUTES: dict[str, int] = {
 TOPIC_COOLDOWN_MINUTES: int = 90
 TOPIC_SUMMARY_THRESHOLD: int = 2  # 이 횟수 이상 감지 시 요약 업데이트 발행
 TABLE_TOPIC_COOLDOWN = "ia_topic_cooldown"
+TABLE_TOPIC_STATE = "ia_topic_state"
+TABLE_X_PUBLISH_FINGERPRINT = "ia_x_publish_fingerprint"
+TABLE_DUPLICATE_DECISION_LOG = "ia_duplicate_decision_log"
 
 
 class AlertStore:
@@ -465,3 +468,152 @@ class AlertStore:
                 f"[AlertStore] 최근 top_news 조회 실패 (B7 비활성 fallback): {e}"
             )
             return []
+    # ────────────────────────────────────────────────────
+    # DuplicateGuard: topic/content 중복 억제 저장소
+    # ────────────────────────────────────────────────────
+    def get_topic_state(self, topic_key: str) -> dict | None:
+        """topic_key의 최근 관측/발행 상태를 조회한다."""
+        try:
+            client = self._get_client()
+            result = (
+                client.table(TABLE_TOPIC_STATE)  # type: ignore[union-attr]
+                .select("*")
+                .eq("topic_key", topic_key)
+                .execute()
+            )
+            rows = result.data or []
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.warning(f"[AlertStore] topic_state 조회 실패: {e}")
+            return None
+
+    def upsert_topic_state(
+        self,
+        topic_key: str,
+        alert_id: str,
+        level: str,
+        score: float,
+        canonical_title: str,
+        keywords: list[str],
+        source_urls: list[str],
+        x_published: bool,
+    ) -> bool:
+        """topic state를 신규 등록하거나 관측 정보를 갱신한다."""
+        try:
+            client = self._get_client()
+            now = datetime.now(UTC)
+            existing = self.get_topic_state(topic_key)
+            if existing:
+                old_urls = set(existing.get("source_urls") or [])
+                merged_urls = sorted(old_urls | set(source_urls))[:20]
+                update_count = int(existing.get("update_count") or 0) + (1 if x_published else 0)
+                updates: dict[str, object] = {
+                    "canonical_title": canonical_title or existing.get("canonical_title") or "",
+                    "keywords": keywords or existing.get("keywords") or [],
+                    "source_urls": merged_urls,
+                    "last_seen_at": now.isoformat(),
+                    "last_alert_id": alert_id,
+                    "last_level": level,
+                    "last_score": score,
+                    "seen_count": int(existing.get("seen_count") or 1) + 1,
+                    "update_count": update_count,
+                    "updated_at": now.isoformat(),
+                }
+                if x_published:
+                    updates["last_x_published_at"] = now.isoformat()
+                client.table(TABLE_TOPIC_STATE).update(updates).eq(  # type: ignore[union-attr]
+                    "topic_key", topic_key
+                ).execute()
+            else:
+                client.table(TABLE_TOPIC_STATE).insert({  # type: ignore[union-attr]
+                    "topic_key": topic_key,
+                    "canonical_title": canonical_title,
+                    "keywords": keywords,
+                    "source_urls": source_urls,
+                    "first_seen_at": now.isoformat(),
+                    "last_seen_at": now.isoformat(),
+                    "last_alert_id": alert_id,
+                    "last_x_published_at": now.isoformat() if x_published else None,
+                    "last_level": level,
+                    "last_score": score,
+                    "seen_count": 1,
+                    "update_count": 1 if x_published else 0,
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                }).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"[AlertStore] topic_state 저장 실패: {e}")
+            return False
+
+    def get_recent_x_fingerprints(self, window_minutes: int = 1440, limit: int = 20) -> list[dict]:
+        """최근 X 발행 fingerprint 목록을 조회한다."""
+        try:
+            client = self._get_client()
+            since = (datetime.now(UTC) - timedelta(minutes=window_minutes)).isoformat()
+            result = (
+                client.table(TABLE_X_PUBLISH_FINGERPRINT)  # type: ignore[union-attr]
+                .select("alert_id,topic_key,content_fingerprint,normalized_text,published_at")
+                .gte("published_at", since)
+                .order("published_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return list(result.data or [])
+        except Exception as e:
+            logger.warning(f"[AlertStore] X fingerprint 조회 실패: {e}")
+            return []
+
+    def save_x_fingerprint(
+        self,
+        alert_id: str,
+        topic_key: str | None,
+        content_fingerprint: str,
+        normalized_text: str,
+        tweet_id: str | None = None,
+    ) -> bool:
+        """X 발행 성공 후 본문 fingerprint를 저장한다."""
+        try:
+            client = self._get_client()
+            client.table(TABLE_X_PUBLISH_FINGERPRINT).insert({  # type: ignore[union-attr]
+                "alert_id": alert_id,
+                "topic_key": topic_key,
+                "content_fingerprint": content_fingerprint,
+                "normalized_text": normalized_text,
+                "tweet_id": tweet_id,
+                "published_at": datetime.now(UTC).isoformat(),
+            }).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"[AlertStore] X fingerprint 저장 실패: {e}")
+            return False
+
+    def save_duplicate_decision(
+        self,
+        alert_id: str,
+        channel: str,
+        topic_key: str | None,
+        action: str,
+        reason: str,
+        similarity_score: float | None = None,
+        previous_alert_id: str | None = None,
+    ) -> bool:
+        """DuplicateGuard 판단 결과를 감사 로그로 저장한다."""
+        try:
+            client = self._get_client()
+            data: dict[str, object | None] = {
+                "alert_id": alert_id,
+                "channel": channel,
+                "topic_key": topic_key,
+                "action": action,
+                "reason": reason[:500],
+                "similarity_score": similarity_score,
+                "previous_alert_id": previous_alert_id,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            client.table(TABLE_DUPLICATE_DECISION_LOG).insert(data).execute()  # type: ignore[union-attr]
+            return True
+        except Exception as e:
+            logger.warning(f"[AlertStore] duplicate decision 저장 실패: {e}")
+            return False
+
