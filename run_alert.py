@@ -27,6 +27,7 @@ from core.data_logger import DataLogger
 from core.logger import configure_root_logger, get_logger
 from db.alert_store import AlertStore
 from detection.alert_engine import AlertEngine
+from detection.duplicate_guard import DuplicateDecision, DuplicateGuard
 from detection.macro_news_layer import MacroNewsLayer
 from publishers.alert_formatter import AlertFormatter
 from publishers.telegram_publisher import TelegramPublisher
@@ -111,6 +112,7 @@ def main() -> None:
         youtube_collector=yt_collector,
     )
     alert_engine = AlertEngine(alert_store=alert_store)
+    duplicate_guard = DuplicateGuard(alert_store=alert_store)
     formatter = AlertFormatter()
     x_pub = XPublisher()
     tg_pub = TelegramPublisher()
@@ -178,6 +180,17 @@ def main() -> None:
                 return True
         return False
 
+    duplicate_decision: DuplicateDecision | None = None
+    if signal.publish_x:
+        duplicate_decision = duplicate_guard.evaluate_pre_format(signal=signal, result=result)
+        if duplicate_decision.suppress_x:
+            signal.publish_x = False
+            logger.info(
+                f"[run_alert] DuplicateGuard pre-format X 발행 억제: "
+                f"action={duplicate_decision.action}, reason={duplicate_decision.reason}, "
+                f"topic={duplicate_decision.topic_key}"
+            )
+
     force_x_template = _detect_topnews_hash_collision() if signal.publish_x else False
 
     # B3 패치 (v1.1.0): 채널별 본문 차별화 — 안티봇 정책
@@ -226,6 +239,7 @@ def main() -> None:
             )
             image_path = None
 
+    x_msg = ""
     if signal.publish_x:
         x_msg = formatter.format_x(     # publish_x=True일 때만 생성 → Gemini 호출 조건부
             level=signal.level,
@@ -234,12 +248,33 @@ def main() -> None:
             top_news_titles=signal.top_news_titles,
             force_template=force_x_template,  # B7 패치 (v1.2.0)
         )
-        try:
-            x_pub.publish(x_msg)
-            x_ok = True
-        except Exception as e:
-            x_err = str(e)
-            logger.error(f"[run_alert] X 발행 실패: {e}")
+        post_decision = duplicate_guard.evaluate_post_format(
+            signal=signal,
+            x_text=x_msg,
+            topic_key=duplicate_decision.topic_key if duplicate_decision else None,
+        )
+        if post_decision.suppress_x:
+            signal.publish_x = False
+            duplicate_decision = post_decision
+            logger.info(
+                f"[run_alert] DuplicateGuard post-format X 발행 억제: "
+                f"action={post_decision.action}, reason={post_decision.reason}, "
+                f"similarity={post_decision.similarity_score}"
+            )
+        else:
+            try:
+                tweet_id = x_pub.publish(x_msg)
+                x_ok = True
+                duplicate_guard.record_x_fingerprint(
+                    alert_id=signal.alert_id,
+                    topic_key=post_decision.topic_key,
+                    x_text=x_msg,
+                    tweet_id=tweet_id,
+                )
+                duplicate_decision = post_decision
+            except Exception as e:
+                x_err = str(e)
+                logger.error(f"[run_alert] X 발행 실패: {e}")
         _publish_jitter()
 
     if signal.publish_tg_free:
@@ -346,6 +381,14 @@ def main() -> None:
             f"[run_alert] audit_persisted=False — fallback JSONL 기록 "
             f"(alert_id={signal.alert_id[:8]}, x={x_ok}, tg_free={tg_free_ok}, "
             f"tg_paid={tg_paid_ok}, tg_internal={tg_internal_ok})"
+        )
+
+    if duplicate_decision is not None:
+        duplicate_guard.record_topic_observation(
+            signal=signal,
+            result=result,
+            decision=duplicate_decision,
+            x_published=x_ok,
         )
 
     # ── Step 8: 쿨다운 설정 ──────────────────────────────────

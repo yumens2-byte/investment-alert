@@ -28,6 +28,10 @@ def _make_mock_client() -> MagicMock:
     client.update.return_value = client
     client.select.return_value = client
     client.eq.return_value = client
+    client.gte.return_value = client
+    client.order.return_value = client
+    client.limit.return_value = client
+    client.insert.return_value = client
     client.execute.return_value = MagicMock(data=[])
     return client
 
