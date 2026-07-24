@@ -16,12 +16,14 @@
 - JSON manifest와 검증 결과 보존
 - 미국 동부 현지시각 08:00/22:00 슬롯 판정
 - 주말·2026년 휴장일 evergreen 모드 판정
+- 전용 GitHub Actions에서 슬롯 기반 offline pilot 자동 실행
 
 ### 현재 불가능
 
 - Claude/Gemini/TTS를 이용한 실제 콘텐츠 생성
 - 회사 마크 및 무료 BGM 자동 승인·합성
 - Supabase를 이용한 원자적 slot claim
+- production 생성·업로드 GitHub Actions 실행
 - GitHub Actions 자동 실행
 - YouTube OAuth 업로드 및 즉시 공개
 
@@ -154,6 +156,17 @@ YOUTUBE_CHANNEL_ID
 ---
 
 ## 7. 현재 Offline Pilot 실행
+
+### 7.0 GitHub Actions 실행
+
+Actions 화면에서 `YouTube Shorts Pilot`을 선택한다.
+
+- `Run workflow → render_video=true`: manifest와 30초 MP4 생성
+- `Run workflow → render_video=false`: manifest-only 실행
+- schedule: 매시 UTC 07분에 wake-up하며 미국 동부 08:00/22:00의 30분 window에서만 생성
+- artifact: `shorts-pilot-<run_number>`, 보존 14일
+
+workflow는 `SHORTS_ENABLED=false`, `SHORTS_UPLOAD_ENABLED=false`, `SHORTS_PUBLIC_ENABLED=false`를 강제하며 Secret을 참조하지 않는다. 따라서 현재 workflow 결과는 어떤 경우에도 YouTube로 업로드되지 않는다.
 
 ### 7.1 사전 점검
 

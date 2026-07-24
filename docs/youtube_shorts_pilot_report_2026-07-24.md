@@ -4,6 +4,19 @@
 > **범위**: 외부 생성 API 및 YouTube 업로드를 호출하지 않는 offline pilot<br>
 > **공개 여부**: 공개/업로드 시도 없음
 
+## 2026-07-24 Workflow Pilot 추가 결과
+
+- `.github/workflows/shorts_pilot.yml` 신규 추가
+- 기존 Alert/Sector workflow와 분리된 `youtube-shorts-pilot` concurrency 사용
+- UTC 매시 07분 wake-up 후 Python이 미국 동부 08:00/22:00을 판정
+- 슬롯 진입 시 날짜/slot 디렉터리에 manifest/MP4 생성
+- 슬롯 밖 실행은 exit 0과 `SKIP` 로그를 반환
+- 수동 실행은 rendered 또는 manifest-only pilot 선택 가능
+- Secret 참조, 모델 API 호출, YouTube 업로드 모두 없음
+- pilot artifact는 14일 보존
+
+추가 자동 테스트 결과는 Shorts 전용 28건 중 `27 passed, 1 skipped`였다. skip 1건은 현재 환경에 FFmpeg가 없을 때만 발생하는 media contract 테스트다.
+
 ## 구현 완료 범위
 
 - 안전 기본값과 generation/upload/public 3단 kill switch

@@ -18,6 +18,7 @@ from shorts.domain.models import (
     SlotName,
 )
 from shorts.rendering.ffmpeg_renderer import render_pilot
+from shorts.scheduling.dispatcher import current_utc, due_slot
 from shorts.validation.script_validator import validate_script
 
 
@@ -108,4 +109,24 @@ def run_pilot(output_dir: Path, render_video: bool = True) -> Path:
     manifest_path.write_text(
         json.dumps(manifest.as_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    return manifest_path
+
+
+def run_due_pilot(
+    output_root: Path,
+    now: datetime | None = None,
+    render_video: bool = True,
+) -> Path | None:
+    """현재 시각이 운영 슬롯 window인 경우에만 격리된 pilot을 실행한다."""
+    claim = due_slot(now or current_utc())
+    if claim is None:
+        return None
+    output_dir = output_root / claim.local_time.date().isoformat() / claim.slot.value
+    manifest_path = run_pilot(output_dir, render_video=render_video)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["content_id"] = claim.content_id
+    payload["slot"] = claim.slot.value
+    payload["mode"] = claim.mode.value
+    payload["metadata"]["scheduled_local_time"] = claim.local_time.isoformat()
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest_path

@@ -114,6 +114,12 @@ Provider별 SDK 객체가 도메인에 노출되지 않도록 protocol adapter�
 
 workflow는 15분마다 실행한다. UTC cron은 실행 신호일 뿐 게시 시각 판정은 Python이 수행한다.
 
+Phase 1 구현 파일은 `.github/workflows/shorts_pilot.yml`이다. 기존 Alert/Sector workflow와 다른 concurrency group을 사용하고 Secret, 모델 API, YouTube uploader를 호출하지 않는다. 스케줄 실행은 `run_shorts.py --dispatch`를 호출해 슬롯 밖에서는 성공적으로 skip하며, 수동 실행은 영상 포함 또는 manifest-only pilot을 선택한다.
+
+```yaml
+on:
+  schedule:
+    - cron: "7 * * * *"
 ```yaml
 on:
   schedule:
@@ -124,6 +130,8 @@ on:
       slot: {required: false, type: choice, options: [auto, morning, night]}
       dry_run: {required: true, type: boolean, default: true}
 ```
+
+Phase 1은 DB claim이 없으므로 슬롯당 중복 실행을 피하기 위해 30분 window 안의 7분 한 번만 사용한다. workflow concurrency가 같은 repository 내 pilot 중첩을 차단한다. DB claim 구현 후에는 7분·22분 두 번의 재시도형 wake-up과 DB unique constraint를 함께 사용한다.
 
 ### 4.2 슬롯 claim 알고리즘
 
