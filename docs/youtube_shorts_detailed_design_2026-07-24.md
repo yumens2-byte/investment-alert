@@ -533,3 +533,5 @@ SHORTS_POLICY_VERSION=v1
 미확정 항목이 있어도 Sprint 1의 도메인·상태·스케줄러·FactPack은 착수할 수 있다. 반면 회사 마크와 BGM은 registry 승인이 없으면 각각 ticker fallback과 무음 BGM fallback을 사용한다.
 
 남아 있는 운영 전 위험의 분석, 종료 조건과 구현 순서는 `docs/youtube_shorts_risk_closure_design_2026-07-24.md`를 따른다. 해당 문서의 R1~R6가 모두 `CLOSED`가 되기 전에는 `SHORTS_PUBLIC_ENABLED`를 활성화하지 않는다.
+
+일상 점검, 배포 전 검사, 환경 승격, kill switch 및 장애 대응 절차는 `docs/youtube_shorts_operations_guide.md`를 따른다.
