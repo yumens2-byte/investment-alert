@@ -1,0 +1,98 @@
+name: YouTube Shorts Pilot
+
+# 기존 alert/sector workflow와 완전히 분리한다. 동일 runner에서 중복 pilot만 차단한다.
+concurrency:
+  group: youtube-shorts-pilot
+  cancel-in-progress: false
+
+"on":
+  schedule:
+    # GitHub cron은 dispatcher wake-up 용도다. Python이 America/New_York
+    # 08:00/22:00의 30분 window를 최종 판정한다.
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      render_video:
+        description: "FFmpeg MP4 렌더 여부"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  offline-pilot:
+    name: Offline Shorts Pilot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # 이 workflow는 Secret/YouTube uploader를 사용하지 않는다.
+    env:
+      SHORTS_ENABLED: "false"
+      SHORTS_UPLOAD_ENABLED: "false"
+      SHORTS_PUBLIC_ENABLED: "false"
+      SHORTS_TIMEZONE: "America/New_York"
+      SHORTS_SLOT_TIMES: "08:00,22:00"
+      SHORTS_DAILY_LIMIT: "2"
+      BGM_GENERATION_MAX_COST_USD: "0"
+      PILOT_OUTPUT_DIR: logs/shorts/pilot
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install FFmpeg
+        if: github.event_name == 'schedule' || inputs.render_video
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Lint Shorts modules
+        run: ruff check shorts run_shorts.py tests/test_shorts_*.py --line-length=100
+
+      - name: Test Shorts pipeline
+        run: pytest -q tests/test_shorts_*.py --no-cov
+
+      - name: Run scheduled slot dispatcher
+        if: github.event_name == 'schedule'
+        run: python run_shorts.py --dispatch --output-dir "$PILOT_OUTPUT_DIR"
+
+      - name: Run manual rendered pilot
+        if: github.event_name == 'workflow_dispatch' && inputs.render_video
+        run: python run_shorts.py --pilot --output-dir "$PILOT_OUTPUT_DIR"
+
+      - name: Run manual manifest-only pilot
+        if: github.event_name == 'workflow_dispatch' && !inputs.render_video
+        run: python run_shorts.py --pilot --no-render --output-dir "$PILOT_OUTPUT_DIR"
+
+      - name: Verify generated media
+        if: hashFiles('logs/shorts/pilot/**/*.mp4') != ''
+        run: |
+          video="$(find "$PILOT_OUTPUT_DIR" -type f -name '*.mp4' -print -quit)"
+          test -n "$video"
+          ffprobe -v error \
+            -show_entries stream=codec_name,width,height,pix_fmt \
+            -show_entries format=duration \
+            -of json "$video"
+
+      - name: Upload pilot artifacts
+        if: always() && hashFiles('logs/shorts/pilot/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: shorts-pilot-${{ github.run_number }}
+          path: logs/shorts/pilot/
+          retention-days: 14
+          if-no-files-found: error
