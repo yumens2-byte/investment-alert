@@ -64,6 +64,7 @@ jobs:
         run: ruff check shorts run_shorts.py tests/test_shorts_*.py --line-length=100
 
       - name: Test Shorts pipeline
+        run: pytest -q tests/test_shorts_*.py --no-cov
         run: pytest -q tests/test_shorts_config.py tests/test_shorts_dispatcher.py tests/test_shorts_validation.py tests/test_shorts_pilot.py --no-cov
 
       - name: Run scheduled slot dispatcher
