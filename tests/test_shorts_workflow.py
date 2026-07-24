@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+
+def _text() -> str:
+    with open(".github/workflows/shorts_pilot.yml", encoding="utf-8") as workflow_file:
+        return workflow_file.read()
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/shorts_pilot.yml")
