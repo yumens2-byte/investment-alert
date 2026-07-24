@@ -13,6 +13,10 @@ DEPRECATED_COLLISION_PATHS = (
     Path("run_shorts.py"),
     Path("tests/test_shorts_pilot.py"),
     Path("tests/test_shorts_workflow.py"),
+    Path("run_shorts.py"),
+    Path("tests/test_shorts_pilot.py"),
+    Path("tests/test_shorts_action_config.py"),
+    Path("tests/test_shorts_import_hygiene.py"),
 )
 
 
