@@ -65,6 +65,7 @@ jobs:
 
       - name: Test Shorts pipeline
         run: pytest -q tests/test_shorts_*.py --no-cov
+        run: pytest -q tests/test_shorts_config.py tests/test_shorts_dispatcher.py tests/test_shorts_validation.py tests/test_shorts_pilot.py --no-cov
 
       - name: Run scheduled slot dispatcher
         if: github.event_name == 'schedule'

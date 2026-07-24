@@ -24,6 +24,7 @@
 - 회사 마크 및 무료 BGM 자동 승인·합성
 - Supabase를 이용한 원자적 slot claim
 - production 생성·업로드 GitHub Actions 실행
+- GitHub Actions 자동 실행
 - YouTube OAuth 업로드 및 즉시 공개
 
 따라서 현재 코드는 **기술 파일럿**이며 운영 공개 준비 완료 상태가 아니다. `SHORTS_ENABLED`, `SHORTS_UPLOAD_ENABLED`, `SHORTS_PUBLIC_ENABLED`를 활성화해도 uploader가 구현되기 전에는 운영하지 않는다.
