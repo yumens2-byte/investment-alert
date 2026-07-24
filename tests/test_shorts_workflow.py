@@ -5,6 +5,9 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/shorts_pilot.yml")
 IMPORT_HYGIENE_FILES = (Path("run_shorts.py"), Path("tests/test_shorts_pilot.py"))
+from pathlib import Path
+
+WORKFLOW = Path(".github/workflows/shorts_pilot.yml")
 
 
 def _text() -> str:

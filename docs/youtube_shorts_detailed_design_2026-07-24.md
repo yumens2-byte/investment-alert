@@ -120,6 +120,10 @@ Phase 1 구현 파일은 `.github/workflows/shorts_pilot.yml`이다. 기존 Aler
 on:
   schedule:
     - cron: "7 * * * *"
+```yaml
+on:
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       local_date: {required: false, type: string}
