@@ -9,6 +9,9 @@ IMPORT_HYGIENE_FILES = (
     Path("tests/test_shorts_pilot.py"),
     Path("tests/test_shorts_workflow.py"),
 )
+from pathlib import Path
+
+WORKFLOW = Path(".github/workflows/shorts_pilot.yml")
 
 
 def _text() -> str:
