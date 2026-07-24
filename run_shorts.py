@@ -17,9 +17,6 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise argparse.ArgumentTypeError("--now는 timezone-aware ISO-8601이어야 합니다")
     return parsed.astimezone(UTC)
-from pathlib import Path
-
-from shorts.pilot import run_pilot
 
 
 def main() -> int:
@@ -41,12 +38,6 @@ def main() -> int:
             return 0
     else:
         manifest_path = run_pilot(Path(args.output_dir), render_video=not args.no_render)
-    parser.add_argument("--no-render", action="store_true", help="FFmpeg 렌더 생략")
-    parser.add_argument("--output-dir", default="logs/shorts/pilot", help="산출물 디렉터리")
-    args = parser.parse_args()
-    if not args.pilot:
-        parser.error("현재는 안전한 --pilot 모드만 지원합니다")
-    manifest_path = run_pilot(Path(args.output_dir), render_video=not args.no_render)
     print(f"Shorts pilot PASS: {manifest_path}")
     return 0
 

@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from shorts.pilot import run_due_pilot, run_pilot
-from shorts.pilot import run_pilot
 from shorts.rendering.ffmpeg_renderer import validate_media
 
 
