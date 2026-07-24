@@ -17,6 +17,16 @@
 
 추가 자동 테스트 결과는 Shorts 전용 28건 중 `27 passed, 1 skipped`였다. skip 1건은 현재 환경에 FFmpeg가 없을 때만 발생하는 media contract 테스트다.
 
+## Ruff import 오류 분석 및 조치
+
+CI 로그의 직접 원인은 `run_shorts.py`에 `Path`와 `run_pilot` import가 함수 정의 뒤에 한 번 더 삽입되고, `tests/test_shorts_pilot.py`에도 `run_pilot` import가 중복된 상태였다.
+
+- 함수 뒤 module import: `E402`
+- 동일 이름 재import: `F811`
+- 정렬되지 않은 중복 import block: `I001`
+
+현재 기준 파일은 import를 상단에 한 번만 선언한다. 추가로 AST 기반 regression test를 도입해 `run_shorts.py`와 `tests/test_shorts_pilot.py`에서 module-level late import와 동일 `(module, name, alias)` import 중복을 ruff 실행 전에도 차단한다. Workflow의 ruff 단계도 그대로 유지하므로 같은 오류는 두 개의 독립 gate에서 탐지된다.
+
 ## 구현 완료 범위
 
 - 안전 기본값과 generation/upload/public 3단 kill switch

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
+WORKFLOW = Path(".github/workflows/shorts_pilot.yml")
+IMPORT_HYGIENE_FILES = (Path("run_shorts.py"), Path("tests/test_shorts_pilot.py"))
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/shorts_pilot.yml")
@@ -33,3 +38,28 @@ def test_workflow_tests_and_verifies_media_before_artifact() -> None:
     assert "ffprobe -v error" in text
     assert "actions/upload-artifact@v4" in text
     assert "retention-days: 14" in text
+
+
+def test_shorts_entrypoint_imports_are_unique_and_top_level() -> None:
+    """중복 patch로 발생했던 E402/F811 import 회귀를 ruff 이전에도 탐지한다."""
+    for path in IMPORT_HYGIENE_FILES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        seen: set[tuple[str, str, str | None]] = set()
+        import_section_open = True
+        for index, node in enumerate(tree.body):
+            if isinstance(node, ast.Expr) and index == 0 and isinstance(node.value, ast.Constant):
+                continue  # module docstring
+            if isinstance(node, ast.ImportFrom):
+                assert import_section_open, f"{path}:{node.lineno} module-level late import"
+                for alias in node.names:
+                    key = (node.module or "", alias.name, alias.asname)
+                    assert key not in seen, f"{path}:{node.lineno} duplicate import {key}"
+                    seen.add(key)
+            elif isinstance(node, ast.Import):
+                assert import_section_open, f"{path}:{node.lineno} module-level late import"
+                for alias in node.names:
+                    key = ("", alias.name, alias.asname)
+                    assert key not in seen, f"{path}:{node.lineno} duplicate import {key}"
+                    seen.add(key)
+            else:
+                import_section_open = False
