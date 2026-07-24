@@ -386,6 +386,7 @@ shorts/
   assets/             # licensed templates; license ledger
   config/
 run_youtube_shorts.py
+run_shorts.py
 ```
 
 모델 SDK를 도메인 로직에서 직접 호출하지 않고 `TextProvider`, `ImageProvider`, `SpeechProvider`, `VideoPublisher` protocol 뒤에 둔다.

@@ -77,6 +77,22 @@ jobs:
       - name: Run manual manifest-only pilot
         if: github.event_name == 'workflow_dispatch' && !inputs.render_video
         run: python run_youtube_shorts.py --pilot --no-render --output-dir "$PILOT_OUTPUT_DIR"
+        run: ruff check shorts run_shorts.py tests/test_shorts_*.py --line-length=100
+
+      - name: Test Shorts pipeline
+        run: pytest -q tests/test_shorts_config.py tests/test_shorts_dispatcher.py tests/test_shorts_validation.py tests/test_shorts_pilot.py --no-cov
+        
+      - name: Run scheduled slot dispatcher
+        if: github.event_name == 'schedule'
+        run: python run_shorts.py --dispatch --output-dir "$PILOT_OUTPUT_DIR"
+
+      - name: Run manual rendered pilot
+        if: github.event_name == 'workflow_dispatch' && inputs.render_video
+        run: python run_shorts.py --pilot --output-dir "$PILOT_OUTPUT_DIR"
+
+      - name: Run manual manifest-only pilot
+        if: github.event_name == 'workflow_dispatch' && !inputs.render_video
+        run: python run_shorts.py --pilot --no-render --output-dir "$PILOT_OUTPUT_DIR"
 
       - name: Verify generated media
         if: hashFiles('logs/shorts/pilot/**/*.mp4') != ''
