@@ -29,7 +29,7 @@ def test_workflow_uses_dispatcher_for_schedule() -> None:
 
 def test_workflow_tests_and_verifies_media_before_artifact() -> None:
     text = _text()
-    assert "tests/test_shorts_pilot.py" in text
+    assert "pytest -q tests/test_shorts_*.py --no-cov" in text
     assert "ffprobe -v error" in text
     assert "actions/upload-artifact@v4" in text
     assert "retention-days: 14" in text
