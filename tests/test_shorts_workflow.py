@@ -4,6 +4,13 @@ from __future__ import annotations
 def _text() -> str:
     with open(".github/workflows/shorts_pilot.yml", encoding="utf-8") as workflow_file:
         return workflow_file.read()
+from pathlib import Path
+
+WORKFLOW = Path(".github/workflows/shorts_pilot.yml")
+
+
+def _text() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_workflow_is_isolated_and_safe_by_default() -> None:
