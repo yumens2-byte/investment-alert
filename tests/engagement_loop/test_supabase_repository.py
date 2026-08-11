@@ -37,13 +37,25 @@ def _fact() -> Fact:
     )
 
 
-def test_credentials_are_isolated_from_existing_supabase_key(
+def test_credentials_reuse_existing_supabase_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SUPABASE_URL", "https://legacy.supabase.co")
-    monkeypatch.setenv("SUPABASE_KEY", "legacy-key")
+    monkeypatch.setenv("SUPABASE_URL", "https://existing.supabase.co/")
+    monkeypatch.setenv("SUPABASE_KEY", "existing-service-key")
+    client = _client()
+    factory = MagicMock(return_value=client)
+    repository = EngagementLoopRepository(client_factory=factory)
+    assert repository._get_client() is client
+    factory.assert_called_once_with("https://existing.supabase.co", "existing-service-key")
+
+
+def test_missing_existing_supabase_credentials_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
     repository = EngagementLoopRepository()
-    with pytest.raises(RuntimeError, match="ENGAGEMENT_LOOP_SUPABASE"):
+    with pytest.raises(RuntimeError, match="SUPABASE_URL/SUPABASE_KEY"):
         repository._get_client()
 
 

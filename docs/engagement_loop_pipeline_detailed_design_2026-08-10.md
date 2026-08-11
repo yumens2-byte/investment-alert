@@ -81,7 +81,7 @@ publishers/x_publisher.py
 | 실행 진입점 | 기존 `run_*.py` | `run_engagement_loop.py` |
 | GitHub Actions group | 기존 group 유지 | `engagement-loop-{slot}` |
 | 영속 저장 | 기존 DB·`logs/...` | 신규 Supabase `ia_engagement_*` 테이블 |
-| 설정 prefix | 혼합 기존 변수 | `ENGAGEMENT_LOOP_*` |
+| 설정 prefix | 혼합 기존 변수 | 기능 설정은 `ENGAGEMENT_LOOP_*`, Supabase는 기존 `SUPABASE_*` 재사용 |
 | Notion | 기존 DB | 초기 미사용, 필요 시 별도 DB |
 | 중복 방지 | 기존 sidecar | `ia_engagement_contents` unique constraint |
 
@@ -266,7 +266,7 @@ ia_engagement_loops       # 주간 aggregate와 불변 criterion
 
 - 여섯 테이블 모두 RLS를 활성화하고 `anon`, `authenticated` 권한을 전부 회수한다.
 - 클라이언트 정책은 만들지 않는다. GitHub Actions의 server-side service role만 접근한다.
-- 기존 `SUPABASE_KEY`로 fallback하지 않고 신규 secret `ENGAGEMENT_LOOP_SUPABASE_SERVICE_KEY`만 허용한다.
+- 저장소에 이미 등록된 `SUPABASE_URL`, `SUPABASE_KEY`를 재사용한다. 단, 클라이언트 RLS policy가 없으므로 `SUPABASE_KEY`는 server-side service role key여야 한다.
 - service role key, 응답 원문, X user ID는 DB·로그·artifact·PR에 기록하지 않는다.
 - 팔로워 식별자는 저장소 밖의 salt를 이용한 SHA-256 hash만 저장하며 원문은 저장하지 않는다.
 - 마이그레이션은 관리자 SQL Editor에서 수행하고 key는 GitHub Environment 보호 규칙을 거친다.
@@ -294,7 +294,7 @@ ia_engagement_loops       # 주간 aggregate와 불변 criterion
 ### 6.5 적용 순서와 검증
 
 1. Supabase SQL Editor에서 `db/migrations/005_add_engagement_loop_tables.sql`을 관리자 역할로 실행한다.
-2. GitHub의 신규 보호 Environment에 `ENGAGEMENT_LOOP_SUPABASE_URL`, `ENGAGEMENT_LOOP_SUPABASE_SERVICE_KEY`를 등록한다.
+2. 기존 GitHub 보호 Environment의 `SUPABASE_URL`, `SUPABASE_KEY`가 해당 프로젝트의 service role credential인지 확인한다.
 3. service role key는 Environment 승인자만 사용할 수 있게 하고 fork PR 및 일반 pull request에는 주입하지 않는다.
 4. 아래 쿼리로 테이블과 RLS를 확인한다.
 
@@ -404,11 +404,11 @@ ENGAGEMENT_LOOP_AUTO_PUBLISH=false     # 1차 버전에서는 true 금지
 ENGAGEMENT_LOOP_TIMEZONE=Asia/Seoul
 ENGAGEMENT_LOOP_COLLISION_WINDOW_MIN=180
 ENGAGEMENT_LOOP_MAX_FACT_AGE_MIN=30
-ENGAGEMENT_LOOP_SUPABASE_URL=<project-url>
-ENGAGEMENT_LOOP_SUPABASE_SERVICE_KEY=<GitHub Environment secret>
+SUPABASE_URL=<existing-project-url>
+SUPABASE_KEY=<existing-service-role-secret>
 ```
 
-X credential은 기존 secret 이름을 읽을 수 있지만 코드 경로와 publication 저장은 분리한다. Supabase key는 기존 key와 공유하거나 fallback하지 않고 반드시 신규 `ENGAGEMENT_LOOP_` prefix secret을 사용한다.
+X credential과 Supabase credential은 기존 secret 이름을 재사용한다. 신규 파이프라인의 격리는 별도 `ia_engagement_*` 테이블, RLS, 코드 경로와 publication 저장 경계로 보장한다.
 
 ### 9.2 스케줄 초안
 

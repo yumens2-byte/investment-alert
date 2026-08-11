@@ -23,35 +23,33 @@ class RepositoryUnavailableError(RuntimeError):
 class EngagementLoopRepository:
     """Store engagement-loop state using a server-only Supabase credential.
 
-    This repository deliberately does not fall back to the existing ``SUPABASE_KEY``.
-    The new pipeline must receive a dedicated service-role secret through
-    ``ENGAGEMENT_LOOP_SUPABASE_SERVICE_KEY``.
+    The pipeline reuses the repository-wide ``SUPABASE_URL`` and ``SUPABASE_KEY``
+    secrets. Because the engagement tables expose no client RLS policies,
+    ``SUPABASE_KEY`` must be the server-side service-role key.
     """
 
     def __init__(
         self,
         supabase_url: str | None = None,
-        service_key: str | None = None,
+        supabase_key: str | None = None,
         client_factory: Callable[[str, str], Any] | None = None,
     ) -> None:
-        raw_url = supabase_url or os.getenv("ENGAGEMENT_LOOP_SUPABASE_URL", "")
+        raw_url = supabase_url or os.getenv("SUPABASE_URL", "")
         self._url = raw_url.rstrip("/")
-        self._service_key = service_key or os.getenv("ENGAGEMENT_LOOP_SUPABASE_SERVICE_KEY", "")
+        self._key = supabase_key or os.getenv("SUPABASE_KEY", "")
         self._client_factory = client_factory
         self._client: Any | None = None
 
     def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
-        if not self._url or not self._service_key:
-            raise RuntimeError(
-                "ENGAGEMENT_LOOP_SUPABASE_URL/ENGAGEMENT_LOOP_SUPABASE_SERVICE_KEY 미설정"
-            )
+        if not self._url or not self._key:
+            raise RuntimeError("SUPABASE_URL/SUPABASE_KEY 미설정")
         if self._client_factory is None:
             from supabase import create_client  # type: ignore[import]
 
             self._client_factory = create_client
-        self._client = self._client_factory(self._url, self._service_key)
+        self._client = self._client_factory(self._url, self._key)
         return self._client
 
     def upsert_loop(self, loop: EngagementLoop) -> bool:
