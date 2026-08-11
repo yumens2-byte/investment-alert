@@ -4,16 +4,16 @@
 >
 > 대상 기준: `d3bee44` 이후 신규 Supabase engagement-loop 기반
 >
-> 결론: 기존 파이프라인 회귀는 발견되지 않았고, 신규 파이프라인에서 발견한 7개 방어 누락을 수정했다. 실제 Supabase 적용 검증은 관리자 credential이 없어 미수행 상태다.
+> 결론: 기존 파이프라인 회귀는 발견되지 않았고, 신규 파이프라인에서 발견한 7개 방어 누락과 Python 3.11 CI import 회귀를 수정했다. 실제 Supabase 적용 검증은 관리자 credential이 없어 미수행 상태다.
 
 ## 1. 전수 테스트 결과
 
 | 점검 | 결과 | 판정 |
 |---|---:|---|
 | 전체 pytest, coverage 제외 | 553 passed, 1 skipped(수정 전 기준선) | 기존 파이프라인 회귀 없음 |
-| 수정 후 전체 pytest + coverage | 556 passed, 1 skipped | 보완 사항 포함 최종 회귀 없음 |
+| 수정 후 전체 pytest + coverage | 557 passed, 1 skipped | CI import 보완 포함 최종 회귀 없음 |
 | 전체 pytest, 프로젝트 coverage gate | 통과 | 전체 80% gate 유지 |
-| 신규 패키지 집중 테스트 | 26 passed | 신규 모델·저장소·migration 방어 통과 |
+| 신규 패키지 집중 테스트 | 27 passed | 신규 모델·저장소·migration·CI import 방어 통과 |
 | 신규 패키지 coverage | 98.73% | 목표 90% 이상 |
 | Ruff lint/format | 통과 | 정적 품질 이상 없음 |
 | compileall | 통과 | 신규 Python 문법·import 이상 없음 |
@@ -65,11 +65,17 @@ NaN/Infinity 값, 수집 시점보다 미래인 `as_of`, criterion이 3개가 �
 
 **수정:** Fact 유한값·시간 순서를 검증하고 `OPEN` 이후 상태는 정확히 3개 criterion을 요구한다.
 
+### F-08 GitHub Actions Python 3.11 import 실패 — 수정
+
+GitHub Actions가 `pytest tests/ ...` console script로 실행될 때 저장소 루트가 import path로 확정되지 않았고, `tests/engagement_loop`도 명시적인 test package가 아니어서 `engagement_loop` import가 collection 단계에서 실패했다. 그 결과 신규 테스트가 실행되지 않은 채 전체 coverage도 22.68%로 중단됐다.
+
+**수정:** `pytest.ini`에 `pythonpath = .`을 지정해 console script와 `python -m pytest`의 경로 차이를 제거하고, `tests/engagement_loop/__init__.py`를 추가해 테스트 모듈을 `tests.engagement_loop.*` namespace로 고정했다. CI와 동일한 `pytest tests/ -v --cov-fail-under=80` 명령을 별도로 실행해 collection과 coverage gate 통과를 확인했다.
+
 ## 3. 기존 파이프라인 영향 점검
 
 - 신규 변경은 `engagement_loop/`, 전용 migration과 테스트에 한정했다.
 - 기존 alert, sector, weekly news, Shorts 실행 파일과 workflow를 수정하지 않았다.
-- 수정 후 전체 557개 테스트 수집 결과에서 신규 26개를 제외한 기존 테스트 531개가 모두 회귀 없이 수행됐고, 그중 기존 환경 의존 테스트 1개만 skip됐다.
+- 수정 후 전체 558개 테스트 수집 결과에서 신규 27개를 제외한 기존 테스트 531개가 모두 회귀 없이 수행됐고, 그중 기존 환경 의존 테스트 1개만 skip됐다.
 - `scripts/ci_preflight.sh`의 collector fallback, event scarcity guard, sector rotation 핵심 테스트가 모두 통과했다.
 - 신규 migration은 기존 테이블에 FK·trigger·RLS를 추가하지 않는다.
 

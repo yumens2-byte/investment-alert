@@ -3,6 +3,7 @@
 from pathlib import Path
 
 MIGRATION = Path("db/migrations/005_add_engagement_loop_tables.sql")
+PYTEST_CONFIG = Path("pytest.ini")
 
 
 def test_migration_is_isolated_and_enables_rls_for_every_table() -> None:
@@ -40,3 +41,9 @@ def test_migration_preserves_audit_events_and_limits_sequence_grants() -> None:
     assert "engagement events are append-only" in sql
     assert "ON ALL SEQUENCES IN SCHEMA public" not in sql
     assert "ON SEQUENCE ia_engagement_facts_id_seq" in sql
+
+
+def test_pytest_console_entrypoint_can_import_repo_packages() -> None:
+    config = PYTEST_CONFIG.read_text(encoding="utf-8")
+    assert "pythonpath = ." in config
+    assert Path("tests/engagement_loop/__init__.py").is_file()
