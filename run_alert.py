@@ -51,13 +51,13 @@ v1.1.2 변경사항 (BUGFIX-2026-05-14 P2 그룹):
 """
 import json
 import logging
+import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-import os
 
-from config.settings import LOG_LEVEL, DRY_RUN
+from config.settings import DRY_RUN, LOG_LEVEL
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -87,7 +87,7 @@ def _load_x_alert_history() -> dict:
     if not _X_ALERT_HISTORY_FILE.exists():
         return {}
     try:
-        with open(_X_ALERT_HISTORY_FILE, "r", encoding="utf-8") as f:
+        with open(_X_ALERT_HISTORY_FILE, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.warning(f"[AlertX] 이력 로드 실패 → 빈 dict 사용: {e}")
@@ -116,7 +116,7 @@ def _is_x_cooldown_active(alert_type: str, history: dict) -> bool:
         return False
     try:
         last_dt = datetime.fromisoformat(last_str)
-        return datetime.now(timezone.utc) - last_dt < timedelta(minutes=_X_ALERT_COOLDOWN_MIN)
+        return datetime.now(UTC) - last_dt < timedelta(minutes=_X_ALERT_COOLDOWN_MIN)
     except Exception:
         return False
 
@@ -283,7 +283,7 @@ def run() -> dict:
 
     # ── Step 0: DLQ 재처리 (B-17) ────────────────────────────
     try:
-        from core.dlq import process_queue, get_queue_size
+        from core.dlq import get_queue_size, process_queue
         q_size = get_queue_size()
         if q_size > 0:
             logger.info(f"[Step 0] DLQ 재처리 시작: {q_size}건")
@@ -296,8 +296,8 @@ def run() -> dict:
 
     # ── Step 1: 데이터 수집 ────────────────────────────────────
     logger.info("[Step 1] 시장 데이터 + RSS 수집")
-    from collectors.yahoo_finance import collect_market_snapshot
     from collectors.news_rss import collect_news_sentiment
+    from collectors.yahoo_finance import collect_market_snapshot
 
     prev_snapshot = _load_prev_snapshot()
     snapshot      = collect_market_snapshot()
@@ -345,7 +345,8 @@ def run() -> dict:
     # ── Step 1-M: FRED 경제지표 변화 감지 ─────────────────────
     try:
         from collectors.fred_client import collect_macro_data, detect_macro_changes
-        from core.alert_history import should_send as _should_send, record_alert as _rec
+        from core.alert_history import record_alert as _rec
+        from core.alert_history import should_send as _should_send
         from publishers.econ_event_formatter import format_econ_event, format_econ_event_telegram
         from publishers.telegram_publisher import send_message as tg_send
         from publishers.x_publisher import publish_tweet as x_pub
@@ -396,9 +397,9 @@ def run() -> dict:
     signal_diff_result = None
     signals_for_alert  = {}
     try:
+        from core.json_builder import load_core_data as _lcd_rank
         from core.rank_tracker import detect_rank_change
         from core.signal_diff import compute_signal_diff
-        from core.json_builder import load_core_data as _lcd_rank
 
         _cd         = _lcd_rank()
         _data       = _cd.get("data", {})
@@ -431,9 +432,10 @@ def run() -> dict:
     regime_change     = None
     score_diff_result = None
     try:
-        from core.regime_tracker import detect_regime_change
-        from core.signal_diff import compute_signal_diff as _sd2, compute_score_diff
         from core.json_builder import load_core_data as _lcd_regime
+        from core.regime_tracker import detect_regime_change
+        from core.signal_diff import compute_score_diff
+        from core.signal_diff import compute_signal_diff as _sd2
 
         _cd2           = _lcd_regime()
         _data2         = _cd2.get("data", {})
@@ -510,7 +512,7 @@ def run() -> dict:
     _core_valid = True
     try:
         from core.json_builder import load_core_data as _lcd_val
-        from core.validator    import validate_data   as _vd
+        from core.validator import validate_data as _vd
 
         _cd_val   = _lcd_val()
         _data_val = _cd_val.get("data", {})
@@ -547,9 +549,9 @@ def run() -> dict:
     logger.info(f"[Step 2.5] Validation PASS — {len(alerts)}건 발행 진행")
 
     # ── Step 3: 쿨다운 체크 + 발송 ────────────────────────────
-    from core.alert_history         import should_send, record_alert
+    from core.alert_history import record_alert, should_send
     from publishers.alert_formatter import format_alert_tweet
-    from publishers.x_publisher     import publish_tweet
+    from publishers.x_publisher import publish_tweet
 
     sent_count = 0
     results    = []
@@ -569,7 +571,7 @@ def run() -> dict:
         # ── [패치1] VIX_COUNTDOWN: X 발행 제거 — x_eligible=False 원칙 적용 ──
         # 설계: VIX_COUNTDOWN은 사전 경고 정보성 알람 → TG 전용 발행
         if signal.alert_type == "VIX_COUNTDOWN":
-            from core.alert_history         import should_send_countdown, record_countdown
+            from core.alert_history import record_countdown, should_send_countdown
             from publishers.alert_formatter import format_countdown_tweet
             vix_now   = signal.snapshot.get("vix", 0)
             from engines.alert_engine import VIX_COUNTDOWN_LEVELS
@@ -631,7 +633,7 @@ def run() -> dict:
             _x_ok    = post_alert_tweet(tweet_for_x, dry_run=DRY_RUN)
             tweet_id = "EMOTION" if _x_ok else "FAIL"
             if _x_ok:
-                x_history[signal.alert_type] = datetime.now(timezone.utc).isoformat()
+                x_history[signal.alert_type] = datetime.now(UTC).isoformat()
                 record_alert(signal.alert_type, signal.level, tweet_id, tweet_for_x)
                 sent_count += 1
                 logger.info(
@@ -835,17 +837,19 @@ def run() -> dict:
             buy     = matrix.get("buy_watch", [])
             sig_val = data.get("trading_signal", {}).get("trading_signal", "HOLD")
 
-            from publishers.telegram_publisher import send_message as tg_send
-            from publishers.telegram_publisher import TelegramPublisher
             from publishers.premium_alert_formatter import (
-                format_vix_premium, format_regime_change_premium
+                format_regime_change_premium,
+                format_vix_premium,
             )
+            from publishers.telegram_publisher import TelegramPublisher
+            from publishers.telegram_publisher import send_message as tg_send
 
-            def _send_paid(text: str) -> None:
-                if image_path is not None:
+            def _send_paid(text: str, _image_path=image_path) -> None:
+                """유료 채널 발행 시 현재 Alert의 이미지 경로를 고정해 사용한다."""
+                if _image_path is not None:
                     try:
                         TelegramPublisher(dry_run=DRY_RUN).publish_with_photo(
-                            text, image_path, target="paid"
+                            text, _image_path, target="paid"
                         )
                     except Exception as image_error:
                         logger.warning(
@@ -1018,7 +1022,7 @@ def run() -> dict:
         "alerts_sent":     sent_count,
         "results":         results,
         "metrics":         _metrics,   # P2-D: summary에도 포함 (호출자가 활용 가능)
-        "timestamp":       datetime.now(timezone.utc).isoformat(),
+        "timestamp":       datetime.now(UTC).isoformat(),
     }
 
     logger.info("=" * 50)

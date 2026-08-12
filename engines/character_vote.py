@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -157,7 +157,7 @@ def publish_vote(reply_to: str | None = None) -> dict:
         ]
         c_result = publish_thread(cand_posts, reply_to=str(header_id))
         c_ids = c_result.get("tweet_ids", [])
-        for (name, emoji, _desc), tid in zip(candidates, c_ids):
+        for (name, emoji, _desc), tid in zip(candidates, c_ids, strict=False):
             candidate_rows.append(
                 {"name": name, "emoji": emoji, "tweet_id": str(tid), "likes": None}
             )
@@ -316,7 +316,7 @@ def _mark(
         payload: dict[str, Any] = {
             "status": status,
             "winner": winner,
-            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "closed_at": datetime.now(UTC).isoformat(),
         }
         if candidates is not None:
             payload["candidates"] = candidates

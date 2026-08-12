@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def _is_valid_tweet_id(tweet_id: Any) -> bool:
 
 def find_followup_targets(now_utc: datetime | None = None) -> list[dict[str, Any]]:
     """22~30h 경과, L2+, followup 미발행, 실 tweet_id 보유 Alert 조회."""
-    now = now_utc or datetime.now(timezone.utc)
+    now = now_utc or datetime.now(UTC)
     upper = (now - timedelta(hours=WINDOW_MIN_HOURS)).isoformat()
     lower = (now - timedelta(hours=WINDOW_MAX_HOURS)).isoformat()
 

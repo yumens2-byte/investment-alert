@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -271,7 +271,7 @@ def run_quiz_answer(min_age_hours: int = 18) -> dict:
 
     try:
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(hours=min_age_hours)
+            datetime.now(UTC) - timedelta(hours=min_age_hours)
         ).isoformat()
         rows = (
             _get_client().table("quiz_rounds")
@@ -313,7 +313,7 @@ def run_quiz_answer(min_age_hours: int = 18) -> dict:
                 _get_client().table("quiz_rounds").update({
                     "status": "answered",
                     "answer_tweet_id": a_id,
-                    "answered_at": datetime.now(timezone.utc).isoformat(),
+                    "answered_at": datetime.now(UTC).isoformat(),
                 }).eq("id", row["id"]).execute()
                 answered += 1
                 logger.info(f"[DataQuiz] 정답 공개 완료: {row['quiz_date']} → {a_id}")

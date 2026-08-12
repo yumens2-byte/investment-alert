@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ def collect_weekly_top(days: int = 7, limit: int = TOP_LIMIT) -> list[dict[str, 
                impression_count, milestone_hours}
     """
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         log_result = (
             _get_client()
             .table("viral_logs")

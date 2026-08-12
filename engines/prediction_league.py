@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -308,7 +308,7 @@ def _settle_one(row: dict[str, Any]) -> bool:
         "result": result,
         "final_value": final,
         "settle_tweet_id": tweet_id,
-        "settled_at": datetime.now(timezone.utc).isoformat(),
+        "settled_at": datetime.now(UTC).isoformat(),
     })
     logger.info(
         f"[PredLeague] {week_key} 정산 완료: {result} "
