@@ -51,13 +51,13 @@ v1.1.2 변경사항 (BUGFIX-2026-05-14 P2 그룹):
 """
 import json
 import logging
+import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-import os
 
-from config.settings import LOG_LEVEL, DRY_RUN
+from config.settings import DRY_RUN, LOG_LEVEL
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -66,7 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_alert")
 
-VERSION = "1.2.0"  # D안: Alert 사후 리포트 훅 추가 (engines/alert_followup)
+VERSION = "1.3.0"  # PHASE 2: KIND 톤 Alert 이미지 첨부
 
 # ─────────────────────────────────────────────────────────────
 # Step X 전용 상수 + 유틸 함수
@@ -87,7 +87,7 @@ def _load_x_alert_history() -> dict:
     if not _X_ALERT_HISTORY_FILE.exists():
         return {}
     try:
-        with open(_X_ALERT_HISTORY_FILE, "r", encoding="utf-8") as f:
+        with open(_X_ALERT_HISTORY_FILE, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.warning(f"[AlertX] 이력 로드 실패 → 빈 dict 사용: {e}")
@@ -116,7 +116,7 @@ def _is_x_cooldown_active(alert_type: str, history: dict) -> bool:
         return False
     try:
         last_dt = datetime.fromisoformat(last_str)
-        return datetime.now(timezone.utc) - last_dt < timedelta(minutes=_X_ALERT_COOLDOWN_MIN)
+        return datetime.now(UTC) - last_dt < timedelta(minutes=_X_ALERT_COOLDOWN_MIN)
     except Exception:
         return False
 
@@ -283,7 +283,7 @@ def run() -> dict:
 
     # ── Step 0: DLQ 재처리 (B-17) ────────────────────────────
     try:
-        from core.dlq import process_queue, get_queue_size
+        from core.dlq import get_queue_size, process_queue
         q_size = get_queue_size()
         if q_size > 0:
             logger.info(f"[Step 0] DLQ 재처리 시작: {q_size}건")
@@ -296,8 +296,8 @@ def run() -> dict:
 
     # ── Step 1: 데이터 수집 ────────────────────────────────────
     logger.info("[Step 1] 시장 데이터 + RSS 수집")
-    from collectors.yahoo_finance import collect_market_snapshot
     from collectors.news_rss import collect_news_sentiment
+    from collectors.yahoo_finance import collect_market_snapshot
 
     prev_snapshot = _load_prev_snapshot()
     snapshot      = collect_market_snapshot()
@@ -345,7 +345,8 @@ def run() -> dict:
     # ── Step 1-M: FRED 경제지표 변화 감지 ─────────────────────
     try:
         from collectors.fred_client import collect_macro_data, detect_macro_changes
-        from core.alert_history import should_send as _should_send, record_alert as _rec
+        from core.alert_history import record_alert as _rec
+        from core.alert_history import should_send as _should_send
         from publishers.econ_event_formatter import format_econ_event, format_econ_event_telegram
         from publishers.telegram_publisher import send_message as tg_send
         from publishers.x_publisher import publish_tweet as x_pub
@@ -396,9 +397,9 @@ def run() -> dict:
     signal_diff_result = None
     signals_for_alert  = {}
     try:
+        from core.json_builder import load_core_data as _lcd_rank
         from core.rank_tracker import detect_rank_change
         from core.signal_diff import compute_signal_diff
-        from core.json_builder import load_core_data as _lcd_rank
 
         _cd         = _lcd_rank()
         _data       = _cd.get("data", {})
@@ -431,9 +432,10 @@ def run() -> dict:
     regime_change     = None
     score_diff_result = None
     try:
-        from core.regime_tracker import detect_regime_change
-        from core.signal_diff import compute_signal_diff as _sd2, compute_score_diff
         from core.json_builder import load_core_data as _lcd_regime
+        from core.regime_tracker import detect_regime_change
+        from core.signal_diff import compute_score_diff
+        from core.signal_diff import compute_signal_diff as _sd2
 
         _cd2           = _lcd_regime()
         _data2         = _cd2.get("data", {})
@@ -510,7 +512,7 @@ def run() -> dict:
     _core_valid = True
     try:
         from core.json_builder import load_core_data as _lcd_val
-        from core.validator    import validate_data   as _vd
+        from core.validator import validate_data as _vd
 
         _cd_val   = _lcd_val()
         _data_val = _cd_val.get("data", {})
@@ -547,9 +549,9 @@ def run() -> dict:
     logger.info(f"[Step 2.5] Validation PASS — {len(alerts)}건 발행 진행")
 
     # ── Step 3: 쿨다운 체크 + 발송 ────────────────────────────
-    from core.alert_history         import should_send, record_alert
+    from core.alert_history import record_alert, should_send
     from publishers.alert_formatter import format_alert_tweet
-    from publishers.x_publisher     import publish_tweet
+    from publishers.x_publisher import publish_tweet
 
     sent_count = 0
     results    = []
@@ -569,7 +571,7 @@ def run() -> dict:
         # ── [패치1] VIX_COUNTDOWN: X 발행 제거 — x_eligible=False 원칙 적용 ──
         # 설계: VIX_COUNTDOWN은 사전 경고 정보성 알람 → TG 전용 발행
         if signal.alert_type == "VIX_COUNTDOWN":
-            from core.alert_history         import should_send_countdown, record_countdown
+            from core.alert_history import record_countdown, should_send_countdown
             from publishers.alert_formatter import format_countdown_tweet
             vix_now   = signal.snapshot.get("vix", 0)
             from engines.alert_engine import VIX_COUNTDOWN_LEVELS
@@ -631,7 +633,7 @@ def run() -> dict:
             _x_ok    = post_alert_tweet(tweet_for_x, dry_run=DRY_RUN)
             tweet_id = "EMOTION" if _x_ok else "FAIL"
             if _x_ok:
-                x_history[signal.alert_type] = datetime.now(timezone.utc).isoformat()
+                x_history[signal.alert_type] = datetime.now(UTC).isoformat()
                 record_alert(signal.alert_type, signal.level, tweet_id, tweet_for_x)
                 sent_count += 1
                 logger.info(
@@ -686,6 +688,40 @@ def run() -> dict:
                 )
             except Exception as db_err:
                 logger.warning(f"[run_alert] Alert DB 적재 실패 (무시): {db_err}")
+
+        # ── PHASE 2: KIND 톤 이미지 선생성 ────────────────────
+        # 명시적으로 두 기능을 모두 켠 L1/L2/L3 Alert만 생성한다.
+        # SYSTEM_DEGRADED 등 운영 경보는 이미지 생성 대상에서 제외하며,
+        # 생성 실패 시 기존 텍스트 발행 경로를 그대로 사용한다.
+        image_path = None
+        _kind_enabled = os.environ.get("KIND_TONE_ENABLED", "").lower() in (
+            "true", "1", "yes",
+        )
+        _image_enabled = os.environ.get(
+            "KIND_TONE_IMAGE_ENABLED", ""
+        ).lower() in ("true", "1", "yes")
+        if (
+            _kind_enabled
+            and _image_enabled
+            and signal.level in ("L1", "L2", "L3")
+            and os.environ.get("GEMINI_API_KEY", "")
+        ):
+            try:
+                from publishers.alert_formatter_kind import generate_alert_image_kind
+
+                image_path = generate_alert_image_kind(
+                    level=signal.level,
+                    reasoning=getattr(
+                        signal, "reasoning", getattr(signal, "reason", "")
+                    ) or "",
+                )
+                if image_path:
+                    logger.info(f"[run_alert] KIND 이미지 생성 성공: {image_path}")
+            except Exception as e:
+                logger.warning(
+                    f"[run_alert] KIND 이미지 생성 실패 — 텍스트 fallback: {e}"
+                )
+                image_path = None
 
         # ── [패치5] B-21A 밈 이미지 선생성 ───────────────────
         # TG 발행 전에 미리 생성하여 TG free 통합 발행에 활용
@@ -750,7 +786,24 @@ def run() -> dict:
             else:
                 # 일반 Alert: tweet_for_tg(기본 포맷) 사용
                 tg_text = f"🚨 <b>Investment OS Alert</b>\n\n{tweet_for_tg}"
-                if meme_path:
+                if image_path is not None:
+                    # KIND 이미지는 알림당 한 번 생성해 Free/Paid에서 재사용한다.
+                    from publishers.telegram_publisher import TelegramPublisher
+                    try:
+                        TelegramPublisher(dry_run=DRY_RUN).publish_with_photo(
+                            tg_text, image_path, target="free"
+                        )
+                        logger.info(
+                            f"[run_alert] TG 무료 KIND 이미지 발행: "
+                            f"{signal.alert_type}/{signal.level}"
+                        )
+                    except Exception as image_error:
+                        logger.warning(
+                            f"[run_alert] TG 무료 이미지 발행 실패 — "
+                            f"텍스트 fallback: {image_error}"
+                        )
+                        send_message(tg_text, channel="free")
+                elif meme_path:
                     # [패치5] 이미지 있으면 캡션+이미지 통합 단일 발행 (텍스트 별도 없음)
                     send_photo(meme_path, caption=tg_text, channel="free")
                     logger.info(
@@ -784,22 +837,40 @@ def run() -> dict:
             buy     = matrix.get("buy_watch", [])
             sig_val = data.get("trading_signal", {}).get("trading_signal", "HOLD")
 
-            from publishers.telegram_publisher import send_message as tg_send
             from publishers.premium_alert_formatter import (
-                format_vix_premium, format_regime_change_premium
+                format_regime_change_premium,
+                format_vix_premium,
             )
+            from publishers.telegram_publisher import TelegramPublisher
+            from publishers.telegram_publisher import send_message as tg_send
+
+            def _send_paid(text: str, _image_path=image_path) -> None:
+                """유료 채널 발행 시 현재 Alert의 이미지 경로를 고정해 사용한다."""
+                if _image_path is not None:
+                    try:
+                        TelegramPublisher(dry_run=DRY_RUN).publish_with_photo(
+                            text, _image_path, target="paid"
+                        )
+                    except Exception as image_error:
+                        logger.warning(
+                            f"[run_alert] TG 유료 이미지 발행 실패 — "
+                            f"텍스트 fallback: {image_error}"
+                        )
+                        tg_send(text, channel="paid")
+                else:
+                    tg_send(text, channel="paid")
 
             if vix_crossed and vix_level:
                 vix_now = snap.get("vix", 0)
                 pm_text = format_vix_premium(vix_now, prev_vix, regime, risk)
-                tg_send(pm_text, channel="paid")
+                _send_paid(pm_text)
                 logger.info(f"[run_alert] 유료 채널 VIX {vix_level} 알람 발송")
 
             if signal.alert_type in ("CRISIS", "FED_SHOCK"):
                 pm_text = format_regime_change_premium(
                     "—", regime, sig_val, risk, buy
                 )
-                tg_send(pm_text, channel="paid")
+                _send_paid(pm_text)
                 logger.info("[run_alert] 유료 채널 레짐 전환 알람 발송")
 
             # B-6: 레짐 전환 L2 → 프리미엄 Score + 전략
@@ -822,7 +893,7 @@ def run() -> dict:
                     etf_hints=signal.etf_hints,
                     avoid_etfs=signal.avoid_etfs,
                 )
-                tg_send(pm_text, channel="paid")
+                _send_paid(pm_text)
                 logger.info("[run_alert] 유료 채널 B-6 레짐 전환 프리미엄 발송")
 
         except Exception as e:
@@ -951,7 +1022,7 @@ def run() -> dict:
         "alerts_sent":     sent_count,
         "results":         results,
         "metrics":         _metrics,   # P2-D: summary에도 포함 (호출자가 활용 가능)
-        "timestamp":       datetime.now(timezone.utc).isoformat(),
+        "timestamp":       datetime.now(UTC).isoformat(),
     }
 
     logger.info("=" * 50)
