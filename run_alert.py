@@ -66,7 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_alert")
 
-VERSION = "1.2.0"  # D안: Alert 사후 리포트 훅 추가 (engines/alert_followup)
+VERSION = "1.3.0"  # PHASE 2: KIND 톤 Alert 이미지 첨부
 
 # ─────────────────────────────────────────────────────────────
 # Step X 전용 상수 + 유틸 함수
@@ -687,6 +687,40 @@ def run() -> dict:
             except Exception as db_err:
                 logger.warning(f"[run_alert] Alert DB 적재 실패 (무시): {db_err}")
 
+        # ── PHASE 2: KIND 톤 이미지 선생성 ────────────────────
+        # 명시적으로 두 기능을 모두 켠 L1/L2/L3 Alert만 생성한다.
+        # SYSTEM_DEGRADED 등 운영 경보는 이미지 생성 대상에서 제외하며,
+        # 생성 실패 시 기존 텍스트 발행 경로를 그대로 사용한다.
+        image_path = None
+        _kind_enabled = os.environ.get("KIND_TONE_ENABLED", "").lower() in (
+            "true", "1", "yes",
+        )
+        _image_enabled = os.environ.get(
+            "KIND_TONE_IMAGE_ENABLED", ""
+        ).lower() in ("true", "1", "yes")
+        if (
+            _kind_enabled
+            and _image_enabled
+            and signal.level in ("L1", "L2", "L3")
+            and os.environ.get("GEMINI_API_KEY", "")
+        ):
+            try:
+                from publishers.alert_formatter_kind import generate_alert_image_kind
+
+                image_path = generate_alert_image_kind(
+                    level=signal.level,
+                    reasoning=getattr(
+                        signal, "reasoning", getattr(signal, "reason", "")
+                    ) or "",
+                )
+                if image_path:
+                    logger.info(f"[run_alert] KIND 이미지 생성 성공: {image_path}")
+            except Exception as e:
+                logger.warning(
+                    f"[run_alert] KIND 이미지 생성 실패 — 텍스트 fallback: {e}"
+                )
+                image_path = None
+
         # ── [패치5] B-21A 밈 이미지 선생성 ───────────────────
         # TG 발행 전에 미리 생성하여 TG free 통합 발행에 활용
         meme_path = None
@@ -750,7 +784,24 @@ def run() -> dict:
             else:
                 # 일반 Alert: tweet_for_tg(기본 포맷) 사용
                 tg_text = f"🚨 <b>Investment OS Alert</b>\n\n{tweet_for_tg}"
-                if meme_path:
+                if image_path is not None:
+                    # KIND 이미지는 알림당 한 번 생성해 Free/Paid에서 재사용한다.
+                    from publishers.telegram_publisher import TelegramPublisher
+                    try:
+                        TelegramPublisher(dry_run=DRY_RUN).publish_with_photo(
+                            tg_text, image_path, target="free"
+                        )
+                        logger.info(
+                            f"[run_alert] TG 무료 KIND 이미지 발행: "
+                            f"{signal.alert_type}/{signal.level}"
+                        )
+                    except Exception as image_error:
+                        logger.warning(
+                            f"[run_alert] TG 무료 이미지 발행 실패 — "
+                            f"텍스트 fallback: {image_error}"
+                        )
+                        send_message(tg_text, channel="free")
+                elif meme_path:
                     # [패치5] 이미지 있으면 캡션+이미지 통합 단일 발행 (텍스트 별도 없음)
                     send_photo(meme_path, caption=tg_text, channel="free")
                     logger.info(
@@ -785,21 +836,37 @@ def run() -> dict:
             sig_val = data.get("trading_signal", {}).get("trading_signal", "HOLD")
 
             from publishers.telegram_publisher import send_message as tg_send
+            from publishers.telegram_publisher import TelegramPublisher
             from publishers.premium_alert_formatter import (
                 format_vix_premium, format_regime_change_premium
             )
 
+            def _send_paid(text: str) -> None:
+                if image_path is not None:
+                    try:
+                        TelegramPublisher(dry_run=DRY_RUN).publish_with_photo(
+                            text, image_path, target="paid"
+                        )
+                    except Exception as image_error:
+                        logger.warning(
+                            f"[run_alert] TG 유료 이미지 발행 실패 — "
+                            f"텍스트 fallback: {image_error}"
+                        )
+                        tg_send(text, channel="paid")
+                else:
+                    tg_send(text, channel="paid")
+
             if vix_crossed and vix_level:
                 vix_now = snap.get("vix", 0)
                 pm_text = format_vix_premium(vix_now, prev_vix, regime, risk)
-                tg_send(pm_text, channel="paid")
+                _send_paid(pm_text)
                 logger.info(f"[run_alert] 유료 채널 VIX {vix_level} 알람 발송")
 
             if signal.alert_type in ("CRISIS", "FED_SHOCK"):
                 pm_text = format_regime_change_premium(
                     "—", regime, sig_val, risk, buy
                 )
-                tg_send(pm_text, channel="paid")
+                _send_paid(pm_text)
                 logger.info("[run_alert] 유료 채널 레짐 전환 알람 발송")
 
             # B-6: 레짐 전환 L2 → 프리미엄 Score + 전략
@@ -822,7 +889,7 @@ def run() -> dict:
                     etf_hints=signal.etf_hints,
                     avoid_etfs=signal.avoid_etfs,
                 )
-                tg_send(pm_text, channel="paid")
+                _send_paid(pm_text)
                 logger.info("[run_alert] 유료 채널 B-6 레짐 전환 프리미엄 발송")
 
         except Exception as e:
