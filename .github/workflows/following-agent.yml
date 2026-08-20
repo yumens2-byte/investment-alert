@@ -1,0 +1,58 @@
+name: X Following Engagement Agent
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: x-following-engagement
+  cancel-in-progress: false
+
+jobs:
+  following-agent:
+    runs-on: ubuntu-latest
+    env:
+      FOLLOWING_ENABLED: ${{ vars.FOLLOWING_ENABLED || 'false' }}
+      EXECUTION_MODE: ${{ vars.FOLLOWING_EXECUTION_MODE || 'DRY_RUN' }}
+      X_USER_ID: ${{ secrets.X_USER_ID }}
+      X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+      X_API_KEY: ${{ secrets.X_API_KEY }}
+      X_API_SECRET: ${{ secrets.X_API_SECRET }}
+      X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      FOLLOWING_INCLUDE_TOPICS: ${{ vars.FOLLOWING_INCLUDE_TOPICS }}
+      FOLLOWING_EXCLUDE_TOPICS: ${{ vars.FOLLOWING_EXCLUDE_TOPICS }}
+      FOLLOWING_BLOCKED_AUTHORS: ${{ vars.FOLLOWING_BLOCKED_AUTHORS }}
+      FOLLOWING_PRIORITY_AUTHORS: ${{ vars.FOLLOWING_PRIORITY_AUTHORS }}
+      MAX_FETCH_COUNT: ${{ vars.MAX_FETCH_COUNT || '300' }}
+      MAX_ACTIONS_PER_RUN: ${{ vars.MAX_ACTIONS_PER_RUN || '2' }}
+      MAX_ACTIONS_PER_DAY: ${{ vars.MAX_ACTIONS_PER_DAY || '5' }}
+      SAME_AUTHOR_COOLDOWN_HOURS: ${{ vars.SAME_AUTHOR_COOLDOWN_HOURS || '24' }}
+      LIVE_ACTION_ALLOWLIST: ${{ vars.LIVE_ACTION_ALLOWLIST || 'POST,QUOTE' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: state/following_agent.sqlite3
+          key: following-state-${{ github.repository_id }}-${{ github.run_id }}
+          restore-keys: following-state-${{ github.repository_id }}-
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/test_following_engagement.py --no-cov
+      - name: Run following agent
+        run: python -m following_engagement.main
+      - name: Upload shadow audit database
+        if: always() && env.EXECUTION_MODE != 'DRY_RUN'
+        uses: actions/upload-artifact@v4
+        with:
+          name: following-shadow-${{ github.run_id }}
+          path: state/following_agent.sqlite3
+          if-no-files-found: ignore
+          retention-days: 30

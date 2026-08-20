@@ -1,5 +1,56 @@
 # Investment-alert Phase 1 — 위기감지 고도화 최종 배포
 
+## X Following Engagement Agent
+
+기존 Alert/X 발행 흐름과 독립된 `following_engagement` 패키지가 공식 X Home
+Timeline API로 팔로잉 게시물을 증분 수집하고, 저비용 필터 → OpenAI 구조화 분석 →
+공통 의사결정 → 실행 모드 Router 순서로 처리한다. 브라우저 자동화는 사용하지 않는다.
+
+### 안전한 초기 설정
+
+신규 Workflow(`.github/workflows/following-agent.yml`)는 아래 값이 기본값이므로 merge만으로
+수집 또는 게시되지 않는다.
+
+```text
+FOLLOWING_ENABLED=false
+EXECUTION_MODE=DRY_RUN
+```
+
+Repository Variable `FOLLOWING_ENABLED=true`로 명시해야 실행된다. 이후
+`FOLLOWING_EXECUTION_MODE`를 `DRY_RUN` → `SHADOW` 순서로 검증하고, 운영 승인 후에만
+`LIVE`로 변경한다. 알 수 없는 실행 모드는 fail-safe로 `DRY_RUN`이 된다.
+
+| 모드 | 판단 파이프라인 | SQLite 감사 기록 | X Write |
+|---|---|---|---|
+| `DRY_RUN` | 실행 | 미적재 | 0 |
+| `SHADOW` | 실행 | `would_execute=1` | 0 |
+| `LIVE` | 실행 + 최종 Guard | 실행 결과 적재 | allowlist만 |
+
+### GitHub 설정
+
+필수 Secrets는 `X_USER_ID`, `OPENAI_API_KEY`와 기존 X 발행/대댓글 파이프라인에서 사용하는
+`X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET`이다. 신규 Timeline
+Read도 동일한 OAuth 1.0a Key 이름과 인증 방식을 사용한다. 값은 코드, 로그, state DB에
+저장하지 않는다. 선택 Variables는 `FOLLOWING_INCLUDE_TOPICS`,
+`FOLLOWING_EXCLUDE_TOPICS`, `FOLLOWING_BLOCKED_AUTHORS`, `FOLLOWING_PRIORITY_AUTHORS`,
+`MAX_FETCH_COUNT`, `MAX_ACTIONS_PER_RUN`, `MAX_ACTIONS_PER_DAY`,
+`SAME_AUTHOR_COOLDOWN_HOURS`, `LIVE_ACTION_ALLOWLIST`이다.
+
+Checkpoint와 Shadow 이력은 `state/following_agent.sqlite3`에 저장되고 Workflow cache로 다음
+실행에 복원된다. SHADOW/LIVE 실행 DB는 30일 artifact로도 보관된다. 실행 결과는
+`$GITHUB_STEP_SUMMARY`에서 fetch/AI/candidate/would-execute/write/error/skip 통계를 확인한다.
+
+로컬 안전 확인:
+
+```bash
+FOLLOWING_ENABLED=false EXECUTION_MODE=DRY_RUN python -m following_engagement.main
+python -m pytest tests/test_following_engagement.py --no-cov
+```
+
+Rollback은 Workflow를 disable하거나 `FOLLOWING_ENABLED=false`로 되돌린 뒤
+`following_engagement/`, Workflow 및 state cache를 제거하면 된다. 기존 `XPublisher`와 기존
+Workflow는 변경하지 않았으므로 기존 발행 동작에는 영향이 없다.
+
 > **작업 기간**: 2026-04-26 ~ Day 6
 > **검증**: 193건 테스트 PASS, ruff clean, DRY_RUN E2E 4 시나리오 PASS
 > **회귀**: 0건
@@ -692,4 +743,3 @@ Total coverage                    → 88.29% (80% 통과)
 | **v1.2.1** | reasoning 로그 + timeout 15분 | 운영자 가독성 + worst case 여유 |
 
 총 **운영 시스템 안정성 4단계 진화** 완료.
-
