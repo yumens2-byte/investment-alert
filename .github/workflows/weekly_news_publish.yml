@@ -118,6 +118,17 @@ jobs:
             fi
           fi
 
+          # case 패턴만으로는 ../ 경로 순회를 차단할 수 없으므로 canonical path를 검사한다.
+          ARCHIVE_ROOT="$(realpath -- "logs/weekly_news")"
+          PICKED_ABS="$(realpath -e -- "${PICKED}")"
+          case "${PICKED_ABS}" in
+            "${ARCHIVE_ROOT}"/*.md) ;;
+            *)
+              echo "❌ archive 경로가 logs/weekly_news 하위 .md가 아님: $PICKED"
+              exit 1
+              ;;
+          esac
+
           echo "✅ Selected: $PICKED"
           echo "archive_path=$PICKED" >> "$GITHUB_OUTPUT"
       - name: 🐦 Publish thread to X
@@ -132,14 +143,25 @@ jobs:
       # sidecar 메타데이터 git commit & push (재발행 방지 영속화)
       - name: 💾 Commit sidecar metadata
         if: ${{ steps.publish.outputs.sidecar_path != '' }}
+        env:
+          ARCHIVE_PATH_INPUT: ${{ steps.detect.outputs.archive_path }}
+          SIDECAR_PATH_INPUT: ${{ steps.publish.outputs.sidecar_path }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${{ steps.publish.outputs.sidecar_path }}"
+          EXPECTED_SIDECAR="$(realpath -m -- "${ARCHIVE_PATH_INPUT}.meta.json")"
+          SIDECAR_ABS="$(realpath -e -- "${SIDECAR_PATH_INPUT}")"
+          if [ "${SIDECAR_ABS}" != "${EXPECTED_SIDECAR}" ]; then
+            echo "::error::publish sidecar 경로 불일치: ${SIDECAR_PATH_INPUT}"
+            exit 1
+          fi
+          # sidecar는 ignore된 logs/ 아래에 있으므로 해당 파일만 강제 stage한다.
+          git add --force -- "${SIDECAR_PATH_INPUT}"
           if ! git diff --staged --quiet; then
             git commit -m "chore(weekly-news): publish metadata $(date -u +%Y-%m-%d)"
             git push origin main
-            echo "✅ sidecar committed: ${{ steps.publish.outputs.sidecar_path }}"
+            echo "✅ sidecar committed: ${SIDECAR_PATH_INPUT}"
           else
             echo "ℹ️ no sidecar changes to commit"
           fi
