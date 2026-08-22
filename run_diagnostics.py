@@ -95,13 +95,14 @@ def check_youtube_rss() -> None:
 
     raw = os.getenv("YOUTUBE_CHANNELS", "")
     raw = raw.strip()
+    _row("등록 채널", f"{raw}")
     if raw.startswith("YOUTUBE_CHANNELS="):
         raw = raw[len("YOUTUBE_CHANNELS="):].strip()
     if not raw:
         _err("YOUTUBE_CHANNELS 환경변수 미설정")
         return
 
-      _row("등록 채널", f"{raw}")
+
 
       
       
