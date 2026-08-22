@@ -101,6 +101,10 @@ def check_youtube_rss() -> None:
         _err("YOUTUBE_CHANNELS 환경변수 미설정")
         return
 
+      _row("등록 채널", f"{raw}")
+
+      
+      
     channels = []
     for pair in raw.split(","):
         pair = pair.strip()
