@@ -141,9 +141,22 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # archive 변경 확인 (collect가 생성/갱신했는지)
+          ARCHIVE_ROOT="$(realpath -- "logs/weekly_news")"
+          ARCHIVE_ABS="$(realpath -e -- "${ARCHIVE_PATH_INPUT}")"
+          case "${ARCHIVE_ABS}" in
+            "${ARCHIVE_ROOT}"/*.md) ;;
+            *)
+              echo "::error::archive 경로가 logs/weekly_news 하위 .md가 아님: ${ARCHIVE_PATH_INPUT}"
+              exit 1
+              ;;
+          esac
+
+          # logs/는 .gitignore 대상이므로 명시적으로 stage한 뒤 변경을 확인한다.
+          # git status <ignored-path>는 신규 파일도 빈 결과를 반환해 발행 후
+          # sidecar commit 단계에서 실패하는 잘못된 "변경 없음" 분기를 만든다.
           SIDECAR_PATH="${ARCHIVE_PATH_INPUT}.meta.json"
-          if [ -z "$(git status --porcelain "${ARCHIVE_PATH_INPUT}")" ]; then
+          git add --force -- "${ARCHIVE_PATH_INPUT}"
+          if git diff --cached --quiet -- "${ARCHIVE_PATH_INPUT}"; then
             echo "::warning::archive 변경 없음 — main에 이미 동일 내용 존재 가능"
             echo "committed=false" >> "$GITHUB_OUTPUT"
             if [ -f "${SIDECAR_PATH}" ]; then
@@ -158,7 +171,6 @@ jobs:
             exit 0
           fi
 
-          git add "${ARCHIVE_PATH_INPUT}"
           git commit -m "feat(weekly-news-sun): ${DATE_INPUT} auto-publish (V1~V5 PASS)"
           git push origin main
           echo "✅ archive main 직접 commit 완료"
@@ -183,14 +195,25 @@ jobs:
 
       - name: 💾 Commit sidecar metadata (v2.0.0)
         if: env.DRY_RUN != 'true' && env.AUTO_PUBLISH_ENABLED == 'true' && steps.direct_publish.outputs.sidecar_path != ''
+        env:
+          ARCHIVE_PATH_INPUT: ${{ steps.collect.outputs.archive_path }}
+          SIDECAR_PATH_INPUT: ${{ steps.direct_publish.outputs.sidecar_path }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${{ steps.direct_publish.outputs.sidecar_path }}"
+          EXPECTED_SIDECAR="$(realpath -m -- "${ARCHIVE_PATH_INPUT}.meta.json")"
+          SIDECAR_ABS="$(realpath -e -- "${SIDECAR_PATH_INPUT}")"
+          if [ "${SIDECAR_ABS}" != "${EXPECTED_SIDECAR}" ]; then
+            echo "::error::publish sidecar 경로 불일치: ${SIDECAR_PATH_INPUT}"
+            exit 1
+          fi
+          # publish 결과는 ignore된 logs/ 아래에 있으므로 해당 파일만 강제 stage한다.
+          git add --force -- "${SIDECAR_PATH_INPUT}"
           if ! git diff --staged --quiet; then
             git commit -m "chore(weekly-news-sun): publish metadata $(date -u +%Y-%m-%d)"
             git push origin main
-            echo "✅ sidecar committed: ${{ steps.direct_publish.outputs.sidecar_path }}"
+            echo "✅ sidecar committed: ${SIDECAR_PATH_INPUT}"
           else
             echo "ℹ️ no sidecar changes to commit"
           fi
