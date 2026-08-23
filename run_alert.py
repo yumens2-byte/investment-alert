@@ -266,7 +266,7 @@ def _load_prev_snapshot() -> dict:
 # 메인 실행
 # ─────────────────────────────────────────────────────────────
 
-def run() -> dict:
+def _run_legacy() -> dict:
     logger.info("=" * 50)
     logger.info(f"[run_alert] v{VERSION} 시작 | DRY_RUN={DRY_RUN}")
     logger.info("=" * 50)
@@ -1029,6 +1029,147 @@ def run() -> dict:
     logger.info(f"[run_alert] 완료 — 감지:{len(alerts)}개 발송:{sent_count}개")
     logger.info("=" * 50)
 
+    return summary
+
+
+def run() -> dict:
+    """Run the repository's canonical Macro-News alert pipeline.
+
+    The previous entrypoint referenced legacy modules that are not part of this
+    repository (``collectors.news_rss``, ``collectors.yahoo_finance`` and
+    ``engines.alert_engine``).  Keeping the old implementation in
+    :func:`_run_legacy` preserves its helper code for migration, while the
+    executable entrypoint now uses the collectors and detection stack that is
+    present, tested and maintained in this repository.
+    """
+    logger.info("=" * 50)
+    logger.info(f"[run_alert] canonical Macro-News 시작 | DRY_RUN={DRY_RUN}")
+    logger.info("=" * 50)
+
+    if DRY_RUN:
+        logger.info("[run_alert] DRY_RUN — 시간 윈도우 체크 생략, 강제 실행")
+    else:
+        should_run, reason = _is_alert_window()
+        if not should_run:
+            logger.info(f"[run_alert] 시간 윈도우 아님 — 스킵: {reason}")
+            return {"alerts_detected": 0, "alerts_sent": 0, "reason": "outside_window"}
+
+    from collectors.news_collector import NewsCollector
+    from collectors.youtube_collector import YouTubeCollector
+    from db.alert_store import AlertStore
+    from detection.alert_engine import AlertEngine
+    from detection.macro_news_layer import MacroNewsLayer
+    from publishers.alert_formatter import AlertFormatter
+    from publishers.telegram_publisher import TelegramPublisher
+    from publishers.x_publisher import XPublisher
+
+    class _DryRunDQStore:
+        """Avoid external persistence and false error logs during a dry run."""
+
+        @staticmethod
+        def save_dq_state(_state):
+            return None
+
+    alert_store = None if DRY_RUN else AlertStore()
+    layer = MacroNewsLayer(
+        news_collector=NewsCollector(),
+        youtube_collector=YouTubeCollector(),
+        dq_store=_DryRunDQStore() if DRY_RUN else None,  # type: ignore[arg-type]
+    )
+    result = layer.detect()
+    signal = AlertEngine(alert_store=alert_store).process(result)
+
+    summary = {
+        "alerts_detected": int(result.level != "NONE"),
+        "alerts_sent": 0,
+        "level": result.level,
+        "score": result.score,
+        "news_events": len(result.news_events),
+        "youtube_events": len(result.youtube_events),
+        "youtube_summaries": len(result.youtube_summaries),
+        "youtube_comparisons": len(result.youtube_comparisons),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    if result.level == "NONE" or not signal.should_publish:
+        logger.info(
+            "[run_alert] Alert 발행 없음 — level=%s news=%d youtube=%d summaries=%d comparisons=%d",
+            result.level,
+            len(result.news_events),
+            len(result.youtube_events),
+            len(result.youtube_summaries),
+            len(result.youtube_comparisons),
+        )
+        return summary
+
+    formatter = AlertFormatter()
+    telegram = TelegramPublisher(dry_run=DRY_RUN)
+    top_news = signal.top_news_titles
+    top_youtube = signal.top_youtube_titles
+    published = {"x": False, "tg_free": False, "tg_paid": False, "tg_internal": False}
+    errors: dict[str, str] = {}
+
+    tg_text = formatter.format_tg(
+        signal.level, signal.score, signal.reasoning, top_news, top_youtube,
+        signal.health_score, signal.alert_id,
+    )
+    internal_text = (
+        formatter.format_degraded(signal.dq_state_dict, signal.alert_id)
+        if signal.level == "SYSTEM_DEGRADED"
+        else formatter.format_internal(
+            signal.level, signal.score, signal.reasoning, top_news, top_youtube,
+            signal.health_score, signal.alert_id,
+        )
+    )
+
+    def _publish(channel: str, operation) -> None:
+        try:
+            operation()
+            published[channel] = True
+        except Exception as exc:
+            errors[channel] = f"{type(exc).__name__}: {exc}"[:500]
+            logger.error(f"[run_alert] {channel} 발행 실패 (다른 채널 계속): {errors[channel]}")
+
+    if signal.publish_tg_free:
+        _publish("tg_free", lambda: telegram.publish_free(tg_text))
+    if signal.publish_tg_paid:
+        _publish("tg_paid", lambda: telegram.publish_paid(tg_text))
+    if signal.publish_tg_internal:
+        _publish("tg_internal", lambda: telegram.publish_internal(internal_text))
+    if signal.publish_x:
+        x_text = formatter.format_x(
+            signal.level, signal.score, signal.reasoning, top_news,
+            force_template=DRY_RUN,
+        )
+        _publish("x", lambda: XPublisher(dry_run=DRY_RUN).publish(x_text))
+
+    sent_count = sum(published.values())
+    summary["alerts_sent"] = sent_count
+    summary["published"] = published
+    summary["errors"] = errors
+
+    if alert_store is not None:
+        alert_store.update_publish_result(
+            signal.alert_id,
+            x_published=published["x"],
+            tg_free_published=published["tg_free"],
+            tg_paid_published=published["tg_paid"],
+            tg_internal_published=published["tg_internal"],
+            x_error=errors.get("x"),
+            tg_free_error=errors.get("tg_free"),
+            tg_paid_error=errors.get("tg_paid"),
+            tg_internal_error=errors.get("tg_internal"),
+        )
+        if sent_count:
+            alert_store.set_cooldown(signal.level, signal.alert_id)
+
+    logger.info(
+        "[run_alert] 완료 — level=%s detected=%d sent=%d summaries=%d comparisons=%d",
+        result.level,
+        summary["alerts_detected"],
+        sent_count,
+        summary["youtube_summaries"],
+        summary["youtube_comparisons"],
+    )
     return summary
 
 
