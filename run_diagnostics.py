@@ -209,7 +209,6 @@ def check_env_vars() -> None:
         "SUPABASE_URL": "Supabase 프로젝트 URL",
         "SUPABASE_KEY": "Supabase anon key",
         "YOUTUBE_CHANNELS": "YouTube 채널 목록",
-        "YOUTUBE_API_KEY": "YouTube Data API Key (RSS 실패시 대체 수집용)",
         "TELEGRAM_BOT_TOKEN": "Telegram Bot 토큰",
         "TELEGRAM_FREE_CHANNEL_ID": "TG 무료 채널 ID",
         "TELEGRAM_PAID_CHANNEL_ID": "TG 유료 채널 ID",
@@ -218,6 +217,10 @@ def check_env_vars() -> None:
         "X_ACCESS_TOKEN": "X Access Token",
         "X_ACCESS_TOKEN_SECRET": "X Access Token Secret",
         "DRY_RUN": "DRY_RUN 모드",
+    }
+
+    optional = {
+        "YOUTUBE_API_KEY": "선택: YouTube RSS 실패 시 Data API 대체 수집용",
     }
 
     all_ok = True
@@ -229,6 +232,16 @@ def check_env_vars() -> None:
         else:
             _err(f"{key:<35} 미설정  ({desc})")
             all_ok = False
+
+    print()
+    _row("선택 환경변수", "미설정이어도 기본 RSS 수집은 동작")
+    for key, desc in optional.items():
+        val = os.getenv(key, "")
+        if val:
+            masked = val[:6] + "..." if len(val) > 6 else val
+            _ok(f"{key:<35} {masked}  ({desc})")
+        else:
+            _warn(f"{key:<35} 미설정  ({desc})")
 
     print()
     if all_ok:

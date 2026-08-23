@@ -31,6 +31,11 @@ from core.logger import get_logger
 from db.dq_store import DataQualityStore
 from detection.dq_monitor import DataQualityMonitor, DataQualityState
 from detection.reasoning_builder import ReasoningBuilder
+from detection.youtube_video_analysis import (
+    VideoComparison,
+    VideoSummary,
+    YouTubeVideoAnalysisPipeline,
+)
 
 VERSION = "1.1.1"
 
@@ -83,6 +88,8 @@ class MacroNewsResult:
     #       예) 수집은 정상이나 키워드 필터로 전량 탈락한 희소 상태(event_scarcity).
     #       런타임 로그/대시보드/운영 채널 전송기의 입력으로 사용한다.
     ops_warnings: list[str] = field(default_factory=list)
+    youtube_summaries: list[VideoSummary] = field(default_factory=list)
+    youtube_comparisons: list[VideoComparison] = field(default_factory=list)
 
 
 # ────────────────────────────────────────────────────────
@@ -166,6 +173,7 @@ class MacroNewsLayer:
         """
         self.news_collector = news_collector
         self.youtube_collector = youtube_collector
+        self.youtube_analysis = YouTubeVideoAnalysisPipeline()
         self.tier_weights = tier_weights or TIER_WEIGHTS
         self.thresholds = level_thresholds or LEVEL_THRESHOLDS
 
@@ -221,6 +229,17 @@ class MacroNewsLayer:
         except Exception as e:
             logger.error(f"[MacroNewsLayer] YouTube 수집 실패 (계속 진행): {type(e).__name__}: {e}")
             source_results["youtube_collector"] = False
+
+        # RSS 수집과 분리된 보수적 metadata/description 요약·비교 단계.
+        # 실패해도 기존 뉴스/YouTube 감지 경로를 중단하지 않는다.
+        youtube_summaries: list[VideoSummary] = []
+        youtube_comparisons: list[VideoComparison] = []
+        try:
+            analysis = self.youtube_analysis.analyze(youtube_events)
+            youtube_summaries = analysis.summaries
+            youtube_comparisons = analysis.comparisons
+        except Exception as e:
+            logger.warning(f"[MacroNewsLayer] YouTube 요약·비교 실패 (계속 진행): {type(e).__name__}: {e}")
 
         # Step 2.4: 시장 프로파일 사전 계산 (경고 강도/임계값 공통 사용)
         market_profile = get_market_profile()
@@ -360,6 +379,8 @@ class MacroNewsLayer:
             policy_version=self.policy_version,
             dq_state=dq_state,
             ops_warnings=ops_warnings,
+            youtube_summaries=youtube_summaries,
+            youtube_comparisons=youtube_comparisons,
         )
 
     def _compute_news_score(self, events: list[CollectorEvent]) -> float:
