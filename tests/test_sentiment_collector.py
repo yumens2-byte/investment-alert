@@ -314,6 +314,98 @@ class TestYfinanceFallback:
             _run_with_timeout(lambda: _t.sleep(3), timeout_sec=1)
 
 
+class TestRecencyGuard:
+    """제목: recency 가드 (v1.1.0 — 2026-08-27 dry_run 결함 재발 방지)"""
+
+    _TODAY = "2026-08-27"
+
+    def _guard(self, name: str, item: dict | None):
+        """제목: 가드 단독 호출 헬퍼"""
+        from datetime import date
+
+        return SentimentCollector._apply_recency_guard(
+            name, item, date.fromisoformat(self._TODAY)
+        )
+
+    @pytest.mark.unit
+    def test_stale_pcr_2012_blocked(self):
+        """제목: 결함 재현 케이스 — 2012년 PCR 값 결측 전환"""
+        item = {"value": 0.64, "date": "2012-06-07"}
+        assert self._guard("pcr", item) is None
+
+    @pytest.mark.unit
+    def test_age_boundary_exact_pass_over_block(self):
+        """제목: 경계값 — 정확히 max_age일 통과, +1일 차단 (pcr=7일)"""
+        assert self._guard("pcr", {"value": 0.7, "date": "2026-08-20"}) is not None  # 7일
+        assert self._guard("pcr", {"value": 0.7, "date": "2026-08-19"}) is None  # 8일
+
+    @pytest.mark.unit
+    def test_missing_or_invalid_date_blocked(self):
+        """제목: 기준일 없음/파싱 불가 → 결측 (검증 불가 데이터 미채택)"""
+        assert self._guard("crypto_fg", {"value": 50.0, "date": ""}) is None
+        assert self._guard("crypto_fg", {"value": 50.0}) is None
+        assert self._guard("crypto_fg", {"value": 50.0, "date": "27/08/2026"}) is None
+
+    @pytest.mark.unit
+    def test_future_date_blocked(self):
+        """제목: 미래 기준일 → 결측 (데이터 이상)"""
+        assert self._guard("vix_ratio", {"value": 0.9, "date": "2026-08-28"}) is None
+
+    @pytest.mark.unit
+    def test_fresh_passes_through_unchanged(self):
+        """제목: 신선 데이터 원본 그대로 통과"""
+        item = {"value": 0.9, "date": "2026-08-27", "vix": 18.0, "vix3m": 20.0}
+        assert self._guard("vix_ratio", item) is item
+
+    @pytest.mark.unit
+    def test_none_passthrough(self):
+        """제목: 이미 결측(None)인 지표는 그대로 None"""
+        assert self._guard("pcr", None) is None
+
+    @pytest.mark.unit
+    def test_collect_all_applies_guard(self):
+        """제목: collect_all 통합 — stale PCR이 최종 결과에서 None"""
+        collector = SentimentCollector(fred_api_key="dummy")
+        with (
+            patch.object(
+                collector,
+                "collect_vix_ratio",
+                return_value={"value": 0.9, "date": "2026-08-26"},
+            ),
+            patch.object(
+                collector,
+                "collect_pcr",
+                return_value={"value": 0.64, "date": "2012-06-07"},  # 결함 재현
+            ),
+            patch.object(
+                collector,
+                "collect_hy_oas",
+                return_value={"value": 318.0, "date": "2026-08-26"},
+            ),
+            patch.object(
+                collector,
+                "collect_breadth",
+                return_value={"value": 0.5, "date": "2026-08-26"},
+            ),
+            patch.object(
+                collector,
+                "collect_crypto_fg",
+                return_value={"value": 50.0, "date": "2026-08-26"},
+            ),
+        ):
+            result = collector.collect_all(today=self._TODAY)
+        assert result["pcr"] is None  # stale 차단
+        assert result["vix_ratio"]["value"] == 0.9  # 신선 통과
+
+    @pytest.mark.unit
+    def test_cboe_url_priority_verified_source_first(self):
+        """제목: CBOE URL 1순위 = 실측 검증된 equitypc.csv (archive 아님)"""
+        from config.sentiment_settings import CBOE_PCR_URLS
+
+        assert CBOE_PCR_URLS[0].endswith("/equitypc.csv")
+        assert CBOE_PCR_URLS[1].endswith("/equitypcarchive.csv")
+
+
 class TestCollectAll:
     """제목: collect_all 오케스트레이션"""
 
@@ -340,7 +432,7 @@ class TestCollectAll:
                 return_value={"value": 50.0, "date": "2026-08-26"},
             ),
         ):
-            result = collector.collect_all()
+            result = collector.collect_all(today="2026-08-27")
         assert set(result.keys()) == {"vix_ratio", "pcr", "hy_oas", "breadth", "crypto_fg"}
         assert result["pcr"] is None  # 예외 → 격리
         assert result["hy_oas"] is None
