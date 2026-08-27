@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # ────────────────────────────────────────────────────────
 # 지표별 밴드 브레이크포인트
@@ -124,13 +124,29 @@ LEVEL_EMOJI: dict[str, str] = {
 # Yahoo Finance v8 chart (sector_collector와 동일 엔드포인트)
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 
-# CBOE Equity PCR — primary는 archive(공통지침 13 지정), fallback은 실측 검증된 current 파일.
+# CBOE Equity PCR — v1.1.0: 실측 검증된 current 파일(equitypc.csv)을 1순위로 교체.
+# 사유(2026-08-27 dry_run 결함): archive 파일은 2012-06-07에서 끝나는 과거 아카이브로
+# 확인됨 — "마지막 유효 행" 파서가 14년 전 값을 최신값으로 오인 수집.
 # 실측 포맷(2026-08 검증): 헤더 "DATE,CALL,PUT,TOTAL,P/C Ratio",
 # 데이터 "MM/DD/YYYY,call,put,total,ratio" (일부 구간 콤마 뒤 공백 존재 — strip 필수)
 CBOE_PCR_URLS: list[str] = [
-    "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypcarchive.csv",
     "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv",
+    "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypcarchive.csv",
 ]
+
+# ────────────────────────────────────────────────────────
+# Recency 가드 (v1.1.0 신설 — 2026-08-27 dry_run 결함 재발 방지)
+# 지표 기준일이 오늘 대비 아래 캘린더일을 초과 과거이거나 기준일이 없으면
+# 결측(None) 처리 — stale 데이터의 점수 반영 차단 (default-deny)
+# 여유일수: 주말(2일) + 연휴/T+1 지연 고려
+# ────────────────────────────────────────────────────────
+MAX_AGE_DAYS: dict[str, int] = {
+    "vix_ratio": 5,
+    "pcr": 7,
+    "hy_oas": 7,
+    "breadth": 5,
+    "crypto_fg": 3,
+}
 
 # FRED — ICE BofA US High Yield Index Option-Adjusted Spread (단위: %, bp 환산 필요)
 FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
