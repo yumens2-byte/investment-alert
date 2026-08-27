@@ -1,8 +1,14 @@
 """
-제목: EDT 심리지표 수집기 (v1.0.0)
+제목: EDT 심리지표 수집기 (v1.1.0)
 내용: 5개 심리지표의 원천 데이터를 4개 소스에서 수집한다.
       sector_collector v1.1.0 패턴 차용 — requests 1순위 + yfinance 2순위 fallback,
       개별 소스 실패 격리 (예외 raise 없이 None 반환, 파이프라인 중단 없음).
+
+변경 사유 (v1.0.0 → v1.1.0):
+  - 2026-08-27 dry_run 결함: CBOE archive CSV 마지막 행(2012-06-07)이
+    최신값으로 오인 수집되어 E 점수 오염
+  - recency 가드 신설: 기준일이 MAX_AGE_DAYS 초과 과거이거나 기준일 미존재 시
+    결측(None) 처리 — stale 데이터 점수 반영 차단 (default-deny)
 
 수집 항목:
   1. VIX / VIX3M 종가          — Yahoo Finance v8 chart
@@ -37,11 +43,12 @@ from config.sentiment_settings import (
     CBOE_PCR_URLS,
     FRED_HY_OAS_SERIES,
     FRED_OBS_URL,
+    MAX_AGE_DAYS,
     YAHOO_CHART_URL,
 )
 from core.logger import get_logger
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -110,10 +117,14 @@ class SentimentCollector:
     # ────────────────────────────────────────────────
     # 공개 API
     # ────────────────────────────────────────────────
-    def collect_all(self) -> dict[str, dict | None]:
+    def collect_all(self, today: str | None = None) -> dict[str, dict | None]:
         """
-        제목: 5개 지표 전체 수집
+        제목: 5개 지표 전체 수집 (v1.1.0 — recency 가드 포함)
         내용: 소스별 실패 격리. 실패 지표는 None.
+              수집 후 지표별 기준일 검사 — stale/기준일 미존재 시 결측 전환.
+
+        Args:
+            today: 기준일 YYYY-MM-DD (None이면 UTC 오늘 — 테스트 주입용)
 
         Returns:
             dict: {
@@ -125,6 +136,7 @@ class SentimentCollector:
             }
         """
         logger.info(f"[SentimentCollector] v{VERSION} 전체 수집 시작")
+        today_date = self._resolve_today(today)
         result: dict[str, dict | None] = {
             "vix_ratio": self._safe(self.collect_vix_ratio, "vix_ratio"),
             "pcr": self._safe(self.collect_pcr, "pcr"),
@@ -132,8 +144,11 @@ class SentimentCollector:
             "breadth": self._safe(self.collect_breadth, "breadth"),
             "crypto_fg": self._safe(self.collect_crypto_fg, "crypto_fg"),
         }
+        # v1.1.0: recency 가드 — stale 데이터 결측 전환 (default-deny)
+        for name in list(result.keys()):
+            result[name] = self._apply_recency_guard(name, result[name], today_date)
         ok = sum(1 for v in result.values() if v is not None)
-        logger.info(f"[SentimentCollector] 수집 완료: {ok}/5 지표")
+        logger.info(f"[SentimentCollector] 수집 완료: {ok}/5 지표 (recency 가드 적용)")
         return result
 
     # ────────────────────────────────────────────────
@@ -374,6 +389,64 @@ class SentimentCollector:
             return datetime.strptime(raw.strip(), "%m/%d/%Y").strftime("%Y-%m-%d")
         except ValueError:
             return None
+
+    # ────────────────────────────────────────────────
+    # 내부 헬퍼 — recency 가드 (v1.1.0)
+    # ────────────────────────────────────────────────
+    @staticmethod
+    def _resolve_today(today: str | None):
+        """제목: 기준일 결정 (None이면 UTC 오늘) — date 객체 반환"""
+        if today:
+            try:
+                return datetime.strptime(today, "%Y-%m-%d").date()
+            except ValueError:
+                logger.warning(
+                    f"[SentimentCollector] today 파싱 실패({today}) → UTC 오늘 사용"
+                )
+        return datetime.now(UTC).date()
+
+    @staticmethod
+    def _apply_recency_guard(name: str, item: dict | None, today_date) -> dict | None:
+        """
+        제목: 지표 기준일 신선도 검사 (default-deny)
+        내용: 아래 조건이면 결측(None) 전환 + WARNING:
+              - 기준일(date) 미존재/파싱 불가 (검증 불가 데이터는 채택하지 않음)
+              - 기준일이 today 대비 MAX_AGE_DAYS[name] 초과 과거
+              - 기준일이 today보다 미래 (데이터 이상)
+        """
+        if item is None:
+            return None
+        max_age = MAX_AGE_DAYS.get(name)
+        if max_age is None:  # 방어 — 미정의 지표는 가드 없이 통과
+            return item
+        raw_date = str(item.get("date") or "").strip()
+        if not raw_date:
+            logger.warning(
+                f"[SentimentCollector] recency 가드: {name} 기준일 없음 → 결측 처리"
+            )
+            return None
+        try:
+            item_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+        except ValueError:
+            logger.warning(
+                f"[SentimentCollector] recency 가드: {name} 기준일 파싱 불가"
+                f"({raw_date}) → 결측 처리"
+            )
+            return None
+        age_days = (today_date - item_date).days
+        if age_days < 0:
+            logger.warning(
+                f"[SentimentCollector] recency 가드: {name} 기준일 미래"
+                f"({raw_date}, today={today_date}) → 결측 처리"
+            )
+            return None
+        if age_days > max_age:
+            logger.warning(
+                f"[SentimentCollector] recency 가드: {name} stale "
+                f"({raw_date}, {age_days}일 경과 > 허용 {max_age}일) → 결측 처리"
+            )
+            return None
+        return item
 
     # ────────────────────────────────────────────────
     # 내부 헬퍼 — 공통
