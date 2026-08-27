@@ -1,0 +1,88 @@
+name: EDT Sentiment Daily
+
+# cron ↔ if 매핑: 본 워크플로우는 schedule 분기 if 미사용 (매핑 대상 없음)
+# 초기 배포: schedule은 DRY_RUN='true' 고정 (검증 기간) — live 전환 시 아래 표현식의
+# 'true' 리터럴을 'false'로 변경 (1곳)
+
+concurrency:
+  group: sentiment-daily-pipeline
+  cancel-in-progress: false
+
+"on":
+  schedule:
+    # US 마감 후 2시간+ 대기 — Yahoo 종가/CBOE T+0 CSV 확정 확보
+    # KST 08:37 = UTC 23:37 평일 (:37 오프셋 — 정각 skip 방지 + sector_alert(23:00)와 분산)
+    - cron: '37 23 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'DRY_RUN 모드 (true=모의, false=실발행)'
+        type: boolean
+        default: true
+
+jobs:
+  sentiment_daily:
+    name: EDT Sentiment Compute & Publish
+    runs-on: ubuntu-latest
+    # anti-bot 최대 400초 + Yahoo 5심볼 최악 + CBOE/FRED + 발행 jitter 여유
+    timeout-minutes: 15
+
+    env:
+      # 운영 제어 — 초기 검증 기간: schedule도 DRY_RUN=true 고정
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
+      # 긴급 정지 스위치 (vars 미설정 시 enabled)
+      SENTIMENT_ENABLED: ${{ vars.SENTIMENT_ENABLED || 'true' }}
+
+      # 데이터 소스 (기존 secrets 재사용)
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+
+      # Supabase (기존 secrets 재사용)
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+      # X (기존 secrets 재사용)
+      X_API_KEY: ${{ secrets.X_API_KEY }}
+      X_API_SECRET: ${{ secrets.X_API_SECRET }}
+      X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+      X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+
+      # Telegram Internal (검수 사본)
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 안티봇: schedule 진입 시 0~400초 random delay (sector_alert 동일 패턴)
+      - name: Anti-bot random delay (schedule only)
+        if: github.event_name == 'schedule'
+        run: |
+          DELAY=$((RANDOM % 400))
+          echo "⏱️ Random delay: ${DELAY}s ($((DELAY/60))m $((DELAY%60))s)"
+          sleep $DELAY
+
+      - name: Create log directory
+        run: mkdir -p logs
+
+      - name: Run Sentiment Pipeline
+        run: python run_sentiment.py
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentiment-daily-log-${{ github.run_number }}
+          path: logs/
+          retention-days: 14
