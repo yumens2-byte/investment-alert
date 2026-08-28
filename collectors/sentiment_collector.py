@@ -1,19 +1,20 @@
 """
-제목: EDT 심리지표 수집기 (v1.1.0)
+제목: EDT 심리지표 수집기 (v1.2.0)
 내용: 5개 심리지표의 원천 데이터를 4개 소스에서 수집한다.
       sector_collector v1.1.0 패턴 차용 — requests 1순위 + yfinance 2순위 fallback,
       개별 소스 실패 격리 (예외 raise 없이 None 반환, 파이프라인 중단 없음).
 
-변경 사유 (v1.0.0 → v1.1.0):
-  - 2026-08-27 dry_run 결함: CBOE archive CSV 마지막 행(2012-06-07)이
-    최신값으로 오인 수집되어 E 점수 오염
-  - recency 가드 신설: 기준일이 MAX_AGE_DAYS 초과 과거이거나 기준일 미존재 시
-    결측(None) 처리 — stale 데이터 점수 반영 차단 (default-deny)
+변경 이력:
+  v1.0.0 초기 설계
+  v1.1.0 recency 가드 신설 (2026-08-27 dry_run stale 결함 수정)
+  v1.2.0 PCR 소스 CBOE CSV → Alpha Vantage SPY PCR API 교체
+         (CBOE equitypc.csv/archive 모두 2019년 이전에서 끊김 — 구조적 수집 불가 확인)
+         CBOE 관련 헬퍼 제거, ALPHAVANTAGE_API_KEY 사용
 
 수집 항목:
   1. VIX / VIX3M 종가          — Yahoo Finance v8 chart
   2. RSP/SPY 20영업일 상대수익률 — Yahoo Finance v8 chart (종가 시계열)
-  3. Equity Put/Call Ratio      — CBOE CDN CSV (archive → current fallback)
+  3. SPY 풀체인 PCR             — Alpha Vantage REALTIME/HISTORICAL_PUT_CALL_RATIO
   4. HY OAS (bp)                — FRED API (BAMLH0A0HYM2, %→bp 환산)
   5. Crypto Fear & Greed        — alternative.me
 
@@ -27,8 +28,6 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
 import os
 import signal
@@ -37,10 +36,10 @@ from datetime import UTC, datetime
 import requests
 
 from config.sentiment_settings import (
+    ALPHA_VANTAGE_PCR_SYMBOL,
     ALTERNATIVE_FNG_URL,
     BREADTH_CHART_RANGE,
     BREADTH_LOOKBACK_DAYS,
-    CBOE_PCR_URLS,
     FRED_HY_OAS_SERIES,
     FRED_OBS_URL,
     MAX_AGE_DAYS,
@@ -48,7 +47,7 @@ from config.sentiment_settings import (
 )
 from core.logger import get_logger
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 logger = get_logger(__name__)
 
@@ -68,7 +67,6 @@ DEFAULT_HEADERS = {
 
 _REQUESTS_TIMEOUT_SEC = 10
 _YFINANCE_TIMEOUT_SEC = 15
-_CSV_TIMEOUT_SEC = 15
 
 
 class _TimeoutError(Exception):  # noqa: N818 — sector_collector 동일 패턴
@@ -104,14 +102,22 @@ class SentimentCollector:
       - 지표별 기준일(date) 분리 반환 (FRED T+1 지연 대응 — 추측값 금지)
     """
 
-    def __init__(self, fred_api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        fred_api_key: str | None = None,
+        alphavantage_api_key: str | None = None,
+    ) -> None:
         """
         제목: SentimentCollector 초기화
 
         Args:
             fred_api_key: None이면 환경변수 FRED_API_KEY 사용
+            alphavantage_api_key: None이면 환경변수 ALPHAVANTAGE_API_KEY 사용
         """
         self._fred_api_key = fred_api_key or os.getenv("FRED_API_KEY", "")
+        self._alphavantage_api_key = alphavantage_api_key or os.getenv(
+            "ALPHAVANTAGE_API_KEY", ""
+        )
         logger.info(f"[SentimentCollector] v{VERSION} 초기화")
 
     # ────────────────────────────────────────────────
@@ -195,17 +201,22 @@ class SentimentCollector:
 
     def collect_pcr(self) -> dict | None:
         """
-        제목: CBOE Equity Put/Call Ratio 수집
-        내용: archive CSV 1순위 → current CSV 2순위. 마지막 유효 데이터 행 채택.
-              실측 포맷: "DATE,CALL,PUT,TOTAL,P/C Ratio" 헤더 이후
-              "MM/DD/YYYY,call,put,total,ratio" (필드 공백 혼재 — strip 처리)
+        제목: SPY 풀체인 Put/Call Ratio 수집 (v1.2.0 — Alpha Vantage 교체)
+        내용: REALTIME_PUT_CALL_RATIO(SPY)로 당일 값 수집.
+              실패 시 HISTORICAL_PUT_CALL_RATIO(SPY, date=오늘)로 fallback.
+              반환 값: put_call_ratio_full_chain (전체 옵션체인 비율).
+              기준일: 실시간 조회는 UTC 오늘, historical은 API 응답 date 필드 사용.
         """
-        for url in CBOE_PCR_URLS:
-            row = self._fetch_cboe_last_row(url)
-            if row is not None:
-                return row
-        logger.warning("[SentimentCollector] pcr: CBOE CSV 전 소스 실패")
-        return None
+        if not self._alphavantage_api_key:
+            logger.warning("[SentimentCollector] pcr: ALPHAVANTAGE_API_KEY 미설정")
+            return None
+        # 1순위: realtime
+        result = self._fetch_av_pcr_realtime()
+        if result is not None:
+            return result
+        # 2순위: historical fallback
+        logger.info("[SentimentCollector] pcr: realtime 실패 → historical fallback")
+        return self._fetch_av_pcr_historical()
 
     def collect_hy_oas(self) -> dict | None:
         """
@@ -349,45 +360,68 @@ class SentimentCollector:
             return []
 
     # ────────────────────────────────────────────────
-    # 내부 헬퍼 — CBOE
+    # 내부 헬퍼 — Alpha Vantage PCR (v1.2.0)
     # ────────────────────────────────────────────────
-    def _fetch_cboe_last_row(self, url: str) -> dict | None:
+    def _fetch_av_pcr_realtime(self) -> dict | None:
         """
-        제목: CBOE CSV 마지막 유효 행 파싱
-        내용: 방어적 파싱 — 뒤에서부터 스캔하여
-              (5필드 + 첫 필드 날짜 + 마지막 필드 float) 조건을 만족하는 첫 행 채택.
+        제목: Alpha Vantage REALTIME_PUT_CALL_RATIO 호출
+        내용: put_call_ratio_full_chain 필드 사용. 기준일 = UTC 오늘.
         """
         try:
-            resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=_CSV_TIMEOUT_SEC)
+            resp = requests.get(
+                "https://www.alphavantage.co/query",
+                params={
+                    "function": "REALTIME_PUT_CALL_RATIO",
+                    "symbol": ALPHA_VANTAGE_PCR_SYMBOL,
+                    "apikey": self._alphavantage_api_key,
+                },
+                headers=DEFAULT_HEADERS,
+                timeout=_REQUESTS_TIMEOUT_SEC,
+            )
             resp.raise_for_status()
-            reader = csv.reader(io.StringIO(resp.text))
-            lines = [row for row in reader if row]
-            for row in reversed(lines):
-                fields = [f.strip() for f in row]
-                if len(fields) < 5:
-                    continue
-                date_iso = self._parse_us_date(fields[0])
-                if date_iso is None:
-                    continue
-                try:
-                    ratio = float(fields[4])
-                except ValueError:
-                    continue
-                return {"value": round(ratio, 4), "date": date_iso}
-            logger.warning(f"[SentimentCollector] pcr: 유효 행 없음 ({url})")
-            return None
+            data = resp.json()
+            ratio_str = str(data.get("put_call_ratio_full_chain", "")).strip()
+            if not ratio_str:
+                logger.warning("[SentimentCollector] pcr realtime: put_call_ratio_full_chain 없음")
+                return None
+            today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+            return {"value": round(float(ratio_str), 4), "date": today_str}
         except Exception as e:
             logger.warning(
-                f"[SentimentCollector] pcr 소스 실패 ({url}): {type(e).__name__}: {e}"
+                f"[SentimentCollector] pcr realtime 실패: {type(e).__name__}: {e}"
             )
             return None
 
-    @staticmethod
-    def _parse_us_date(raw: str) -> str | None:
-        """제목: MM/DD/YYYY → YYYY-MM-DD 변환 (실패 시 None)"""
+    def _fetch_av_pcr_historical(self) -> dict | None:
+        """
+        제목: Alpha Vantage HISTORICAL_PUT_CALL_RATIO fallback
+        내용: date=오늘 기준 조회. API 응답의 date 필드를 기준일로 사용.
+        """
         try:
-            return datetime.strptime(raw.strip(), "%m/%d/%Y").strftime("%Y-%m-%d")
-        except ValueError:
+            today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+            resp = requests.get(
+                "https://www.alphavantage.co/query",
+                params={
+                    "function": "HISTORICAL_PUT_CALL_RATIO",
+                    "symbol": ALPHA_VANTAGE_PCR_SYMBOL,
+                    "date": today_str,
+                    "apikey": self._alphavantage_api_key,
+                },
+                headers=DEFAULT_HEADERS,
+                timeout=_REQUESTS_TIMEOUT_SEC,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            ratio_str = str(data.get("put_call_ratio_full_chain", "")).strip()
+            date_str = str(data.get("date", today_str)).strip() or today_str
+            if not ratio_str:
+                logger.warning("[SentimentCollector] pcr historical: put_call_ratio_full_chain 없음")
+                return None
+            return {"value": round(float(ratio_str), 4), "date": date_str}
+        except Exception as e:
+            logger.warning(
+                f"[SentimentCollector] pcr historical 실패: {type(e).__name__}: {e}"
+            )
             return None
 
     # ────────────────────────────────────────────────
