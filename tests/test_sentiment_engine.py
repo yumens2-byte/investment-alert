@@ -261,11 +261,11 @@ class TestGoldenMaster:
                 vix_ratio=0.94, pcr=0.81, hy_oas=318.0, breadth=-1.4, crypto_fg=38.0
             )
         )
-        # 수기 검산 값 (밴드 정의 기준)
+        # 수기 검산 값 (밴드 정의 기준 — v1.2.0 BAND_PCR SPY 기준)
         assert result.scores["vix_ratio"] == pytest.approx(42.14, abs=0.01)
-        assert result.scores["pcr"] == pytest.approx(41.47, abs=0.01)
+        assert result.scores["pcr"] == pytest.approx(81.67, abs=0.01)
         assert result.scores["hy_oas"] == pytest.approx(59.8, abs=0.01)
         assert result.scores["breadth"] == pytest.approx(41.0, abs=0.01)
         assert result.scores["crypto_fg"] == pytest.approx(38.0, abs=0.01)
-        assert result.e_score == pytest.approx(44.9, abs=0.02)
-        assert result.level == "FEAR"
+        assert result.e_score == pytest.approx(52.94, abs=0.02)
+        assert result.level == "NEUTRAL"
