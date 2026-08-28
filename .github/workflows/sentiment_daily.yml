@@ -18,7 +18,7 @@ concurrency:
       dry_run:
         description: 'DRY_RUN 모드 (true=모의, false=실발행)'
         type: boolean
-        default: false
+        default: true
 
 jobs:
   sentiment_daily:
@@ -35,6 +35,9 @@ jobs:
 
       # 데이터 소스 (기존 secrets 재사용)
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+
+      # Alpha Vantage — SPY PCR 수집 (v1.2.0 신설)
+      ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
 
       # Supabase (기존 secrets 재사용)
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
