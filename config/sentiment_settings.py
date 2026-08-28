@@ -12,11 +12,18 @@
   - 데이터 소스 URL
 
 점수 방향: 0 = 극단공포, 100 = 극단탐욕.
+
+변경 이력:
+  v1.0.0 초기 설계
+  v1.1.0 CBOE URL 순서 교체 + recency 가드 MAX_AGE_DAYS 신설
+  v1.2.0 PCR 소스 CBOE CSV → Alpha Vantage SPY PCR API 교체
+         (CBOE equitypc.csv/equitypcarchive.csv 두 파일 모두 2019년 이전에서 끊김 확인)
+         BAND_PCR SPY 풀체인 PCR 기준 재정의 (절대 수준 상이 — CBOE 밴드 오적용 방지)
 """
 
 from __future__ import annotations
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # ────────────────────────────────────────────────────────
 # 지표별 밴드 브레이크포인트
@@ -33,14 +40,17 @@ BAND_VIX_RATIO: list[tuple[float, float]] = [
     (1.10, 0.0),
 ]
 
-# CBOE Equity Put/Call Ratio — 값이 클수록 공포 (풋 수요 증가)
+# SPY 풀체인 Put/Call Ratio (Alpha Vantage) — v1.2.0 교체
+# SPY는 헤지 목적 풋 비율이 구조적으로 높아 CBOE Equity PCR보다 절대 수준이 높음.
+# 실측(2026-08-28): GREED 시장에서 SPY PCR ≈ 1.02~1.03
+# 브레이크포인트는 초기값으로 운영 후 실측 데이터 기반 튜닝 전제.
 BAND_PCR: list[tuple[float, float]] = [
-    (0.40, 100.0),
-    (0.50, 75.0),
-    (0.62, 55.0),
-    (0.78, 45.0),
-    (0.95, 25.0),
-    (1.20, 0.0),
+    (0.70, 100.0),
+    (0.85, 75.0),
+    (1.00, 55.0),
+    (1.20, 45.0),
+    (1.40, 25.0),
+    (1.80, 0.0),
 ]
 
 # ICE BofA US High Yield OAS (bp) — 값이 클수록 공포 (신용 스트레스)
@@ -124,15 +134,10 @@ LEVEL_EMOJI: dict[str, str] = {
 # Yahoo Finance v8 chart (sector_collector와 동일 엔드포인트)
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 
-# CBOE Equity PCR — v1.1.0: 실측 검증된 current 파일(equitypc.csv)을 1순위로 교체.
-# 사유(2026-08-27 dry_run 결함): archive 파일은 2012-06-07에서 끝나는 과거 아카이브로
-# 확인됨 — "마지막 유효 행" 파서가 14년 전 값을 최신값으로 오인 수집.
-# 실측 포맷(2026-08 검증): 헤더 "DATE,CALL,PUT,TOTAL,P/C Ratio",
-# 데이터 "MM/DD/YYYY,call,put,total,ratio" (일부 구간 콤마 뒤 공백 존재 — strip 필수)
-CBOE_PCR_URLS: list[str] = [
-    "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv",
-    "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypcarchive.csv",
-]
+# Alpha Vantage PCR — v1.2.0 신설 (CBOE CSV 폐기 대체)
+# 실측(2026-08-28): REALTIME_PUT_CALL_RATIO(SPY) → put_call_ratio_full_chain 정상 반환
+# HISTORICAL_PUT_CALL_RATIO(SPY, date=YYYY-MM-DD) → 과거 날짜 기준일 명시 반환
+ALPHA_VANTAGE_PCR_SYMBOL = "SPY"  # 풀체인 PCR 대리 지표
 
 # ────────────────────────────────────────────────────────
 # Recency 가드 (v1.1.0 신설 — 2026-08-27 dry_run 결함 재발 방지)
@@ -142,7 +147,7 @@ CBOE_PCR_URLS: list[str] = [
 # ────────────────────────────────────────────────────────
 MAX_AGE_DAYS: dict[str, int] = {
     "vix_ratio": 5,
-    "pcr": 7,
+    "pcr": 5,
     "hy_oas": 7,
     "breadth": 5,
     "crypto_fg": 3,
