@@ -1,7 +1,8 @@
 """
 제목: SentimentCollector 단위 테스트 (mock 기반)
-내용: Yahoo/CBOE/FRED/alternative.me 파싱 로직 및 실패 격리 검증.
+내용: Yahoo/Alpha Vantage PCR/FRED/alternative.me 파싱 로직 및 실패 격리 검증.
       네트워크 호출은 전부 mock — 통합 테스트는 dry_run 실행으로 대체.
+      v1.2.0: CBOE → Alpha Vantage PCR 교체에 따른 TestAlphaVantagePcr 신설.
 """
 
 from __future__ import annotations
@@ -11,16 +12,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from collectors.sentiment_collector import SentimentCollector
-
-# 실측 검증된 CBOE CSV 포맷 (2026-08 — 헤더/공백 혼재 재현)
-_CBOE_CSV = (
-    "Cboe Volume and Put/Call Ratio data disclaimer,,,,\n"
-    ", PRODUCT: EQUITY,,EXCHANGE: Cboe,\n"
-    "DATE,CALL,PUT,TOTAL,P/C Ratio\n"
-    "11/1/2006,976510,623929,1600439,0.64\n"
-    "08/25/2026, 941270, 713020, 1654290, 0.76\n"
-    "08/26/2026, 800800, 648648, 1449448, 0.81\n"
-)
 
 
 def _mock_resp(json_data=None, text: str = "") -> MagicMock:
@@ -48,40 +39,74 @@ def _yahoo_chart_json(ts_close_pairs: list[tuple[int, float | None]]) -> dict:
     }
 
 
-class TestCboePcr:
-    """제목: CBOE PCR CSV 파싱"""
+def _av_pcr_realtime_payload(ratio: str = "1.02") -> dict:
+    """제목: Alpha Vantage REALTIME_PUT_CALL_RATIO 응답 mock"""
+    return {"symbol": "SPY", "put_call_ratio_full_chain": ratio}
+
+
+def _av_pcr_historical_payload(ratio: str = "1.03", date: str = "2026-08-27") -> dict:
+    """제목: Alpha Vantage HISTORICAL_PUT_CALL_RATIO 응답 mock"""
+    return {"symbol": "SPY", "date": date, "put_call_ratio_full_chain": ratio}
+
+
+class TestAlphaVantagePcr:
+    """제목: Alpha Vantage SPY PCR 수집 (v1.2.0 — CBOE 교체)"""
 
     @pytest.mark.unit
-    def test_parses_last_valid_row(self):
-        """제목: 마지막 유효 행 채택 + 공백 strip + 날짜 ISO 변환"""
-        collector = SentimentCollector(fred_api_key="dummy")
+    def test_realtime_returns_full_chain_ratio(self):
+        """제목: realtime API 정상 — put_call_ratio_full_chain 파싱 + 기준일 오늘"""
+        collector = SentimentCollector(alphavantage_api_key="dummy")
         with patch(
             "collectors.sentiment_collector.requests.get",
-            return_value=_mock_resp(text=_CBOE_CSV),
+            return_value=_mock_resp(json_data=_av_pcr_realtime_payload("1.02")),
         ):
             result = collector.collect_pcr()
         assert result is not None
-        assert result["value"] == pytest.approx(0.81)
-        assert result["date"] == "2026-08-26"
+        assert result["value"] == pytest.approx(1.02)
+        assert result["date"]  # UTC 오늘 날짜 존재
 
     @pytest.mark.unit
-    def test_fallback_to_second_url(self):
-        """제목: archive 실패 시 current CSV fallback"""
-        collector = SentimentCollector(fred_api_key="dummy")
-        fail = MagicMock()
-        fail.raise_for_status.side_effect = RuntimeError("404")
-        ok = _mock_resp(text=_CBOE_CSV)
+    def test_realtime_failure_falls_back_to_historical(self):
+        """제목: realtime 실패 → historical fallback 호출"""
+        collector = SentimentCollector(alphavantage_api_key="dummy")
+        realtime_fail = MagicMock()
+        realtime_fail.raise_for_status.side_effect = RuntimeError("5xx")
+        historical_ok = _mock_resp(json_data=_av_pcr_historical_payload("1.03", "2026-08-27"))
         with patch(
-            "collectors.sentiment_collector.requests.get", side_effect=[fail, ok]
+            "collectors.sentiment_collector.requests.get",
+            side_effect=[realtime_fail, historical_ok],
         ):
             result = collector.collect_pcr()
         assert result is not None
-        assert result["value"] == pytest.approx(0.81)
+        assert result["value"] == pytest.approx(1.03)
+        assert result["date"] == "2026-08-27"
+
+    @pytest.mark.unit
+    def test_historical_returns_api_date(self):
+        """제목: historical API 기준일 = API 응답 date 필드 사용"""
+        collector = SentimentCollector(alphavantage_api_key="dummy")
+        with patch.object(collector, "_fetch_av_pcr_realtime", return_value=None):
+            with patch(
+                "collectors.sentiment_collector.requests.get",
+                return_value=_mock_resp(
+                    json_data=_av_pcr_historical_payload("1.05", "2026-08-27")
+                ),
+            ):
+                result = collector.collect_pcr()
+        assert result is not None
+        assert result["date"] == "2026-08-27"
+
+    @pytest.mark.unit
+    def test_missing_api_key_returns_none(self):
+        """제목: ALPHAVANTAGE_API_KEY 미설정 → None (경고 후 격리)"""
+        with patch.dict("os.environ", {"ALPHAVANTAGE_API_KEY": ""}, clear=False):
+            collector = SentimentCollector(alphavantage_api_key="")
+            assert collector.collect_pcr() is None
 
     @pytest.mark.unit
     def test_all_sources_fail_returns_none(self):
-        """제목: 전 소스 실패 시 None (예외 미전파)"""
-        collector = SentimentCollector(fred_api_key="dummy")
+        """제목: realtime + historical 모두 실패 → None (예외 미전파)"""
+        collector = SentimentCollector(alphavantage_api_key="dummy")
         with patch(
             "collectors.sentiment_collector.requests.get",
             side_effect=RuntimeError("network down"),
@@ -89,22 +114,14 @@ class TestCboePcr:
             assert collector.collect_pcr() is None
 
     @pytest.mark.unit
-    def test_no_valid_row_returns_none(self):
-        """제목: 유효 데이터 행 부재 시 None"""
-        collector = SentimentCollector(fred_api_key="dummy")
+    def test_empty_ratio_returns_none(self):
+        """제목: API 응답에 put_call_ratio_full_chain 없음 → None"""
+        collector = SentimentCollector(alphavantage_api_key="dummy")
         with patch(
             "collectors.sentiment_collector.requests.get",
-            return_value=_mock_resp(text="DATE,CALL,PUT,TOTAL,P/C Ratio\n"),
+            return_value=_mock_resp(json_data={"symbol": "SPY"}),
         ):
             assert collector.collect_pcr() is None
-
-    @pytest.mark.unit
-    def test_us_date_parser(self):
-        """제목: MM/DD/YYYY 파서 경계"""
-        assert SentimentCollector._parse_us_date("08/26/2026") == "2026-08-26"
-        assert SentimentCollector._parse_us_date(" 1/3/2007 ") == "2007-01-03"
-        assert SentimentCollector._parse_us_date("not-a-date") is None
-        assert SentimentCollector._parse_us_date("2026-08-26") is None
 
 
 class TestFredHyOas:
@@ -330,14 +347,15 @@ class TestRecencyGuard:
     @pytest.mark.unit
     def test_stale_pcr_2012_blocked(self):
         """제목: 결함 재현 케이스 — 2012년 PCR 값 결측 전환"""
-        item = {"value": 0.64, "date": "2012-06-07"}
+        item = {"value": 1.03, "date": "2012-06-07"}
         assert self._guard("pcr", item) is None
 
     @pytest.mark.unit
     def test_age_boundary_exact_pass_over_block(self):
-        """제목: 경계값 — 정확히 max_age일 통과, +1일 차단 (pcr=7일)"""
-        assert self._guard("pcr", {"value": 0.7, "date": "2026-08-20"}) is not None  # 7일
-        assert self._guard("pcr", {"value": 0.7, "date": "2026-08-19"}) is None  # 8일
+        """제목: 경계값 — 정확히 max_age일 통과, +1일(6일) 차단 (pcr=5일)
+        today=2026-08-27 기준: 08-22(5일)=통과, 08-21(6일)=차단"""
+        assert self._guard("pcr", {"value": 1.0, "date": "2026-08-22"}) is not None  # 5일
+        assert self._guard("pcr", {"value": 1.0, "date": "2026-08-21"}) is None  # 6일
 
     @pytest.mark.unit
     def test_missing_or_invalid_date_blocked(self):
@@ -365,7 +383,7 @@ class TestRecencyGuard:
     @pytest.mark.unit
     def test_collect_all_applies_guard(self):
         """제목: collect_all 통합 — stale PCR이 최종 결과에서 None"""
-        collector = SentimentCollector(fred_api_key="dummy")
+        collector = SentimentCollector(fred_api_key="dummy", alphavantage_api_key="dummy")
         with (
             patch.object(
                 collector,
@@ -375,7 +393,7 @@ class TestRecencyGuard:
             patch.object(
                 collector,
                 "collect_pcr",
-                return_value={"value": 0.64, "date": "2012-06-07"},  # 결함 재현
+                return_value={"value": 1.03, "date": "2019-10-04"},  # stale 재현
             ),
             patch.object(
                 collector,
@@ -398,12 +416,10 @@ class TestRecencyGuard:
         assert result["vix_ratio"]["value"] == 0.9  # 신선 통과
 
     @pytest.mark.unit
-    def test_cboe_url_priority_verified_source_first(self):
-        """제목: CBOE URL 1순위 = 실측 검증된 equitypc.csv (archive 아님)"""
-        from config.sentiment_settings import CBOE_PCR_URLS
-
-        assert CBOE_PCR_URLS[0].endswith("/equitypc.csv")
-        assert CBOE_PCR_URLS[1].endswith("/equitypcarchive.csv")
+    def test_alpha_vantage_pcr_symbol_configured(self):
+        """제목: Alpha Vantage PCR 소스 심볼 = SPY (설정 검증)"""
+        from config.sentiment_settings import ALPHA_VANTAGE_PCR_SYMBOL
+        assert ALPHA_VANTAGE_PCR_SYMBOL == "SPY"
 
 
 class TestCollectAll:
