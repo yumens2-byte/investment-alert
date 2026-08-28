@@ -38,7 +38,7 @@ from publishers.sentiment_formatter import SentimentFormatter
 from publishers.telegram_publisher import TelegramPublisher
 from publishers.x_publisher import XPublisher
 
-VERSION = "1.0.0"
+VERSION = "1.0.2"
 
 
 def _log_preflight_warnings(logger) -> None:
