@@ -1,0 +1,43 @@
+{
+  "version": "1.0.0",
+  "archive_path": "logs/weekly_news/2026/08/2026-08-29-saturday.md",
+  "published_at_kst": "2026-08-29T14:34:54.889468+09:00",
+  "thread_url": "https://x.com/tiger18272/status/2093573075425951964",
+  "tweet_count": 8,
+  "tweets": [
+    {
+      "index": 1,
+      "tweet_id": "2093573075425951964"
+    },
+    {
+      "index": 2,
+      "tweet_id": "2093573076524867716"
+    },
+    {
+      "index": 3,
+      "tweet_id": "2093573078173221193"
+    },
+    {
+      "index": 4,
+      "tweet_id": "2093573079406403616"
+    },
+    {
+      "index": 5,
+      "tweet_id": "2093573080740143518"
+    },
+    {
+      "index": 6,
+      "tweet_id": "2093573081948205153"
+    },
+    {
+      "index": 7,
+      "tweet_id": "2093573083147735183"
+    },
+    {
+      "index": 8,
+      "tweet_id": "2093573084586336574"
+    }
+  ],
+  "status": "published",
+  "force_republished": false
+}
