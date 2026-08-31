@@ -20,6 +20,7 @@ def test_action_is_isolated_and_safe_by_default() -> None:
 def test_action_uses_dispatcher_for_schedule() -> None:
     text = _workflow_text()
     assert 'cron: "7 * * * *"' in text
+    assert "python run_youtube_shorts.py --dispatch" in text
     assert "python run_shorts.py --dispatch" in text
     assert "github.event_name == 'schedule'" in text
 

@@ -1,8 +1,3 @@
-"""Backward-compatible entrypoint for the YouTube Shorts pilot CLI.
-
-The canonical implementation lives in ``run_youtube_shorts.py``.  This shim keeps
-older CI commands and local runbooks working while avoiding duplicate inline
-imports that previously caused ruff E402/F811 failures.
 """YouTube Shorts 파이프라인 진입점.
 
 현재 릴리스는 외부 생성 API와 YouTube를 호출하지 않는 pilot만 제공한다.
@@ -10,7 +5,6 @@ imports that previously caused ruff E402/F811 failures.
 
 from __future__ import annotations
 
-from run_youtube_shorts import main
 import argparse
 from datetime import UTC, datetime
 from pathlib import Path
