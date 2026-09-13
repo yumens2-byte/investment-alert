@@ -29,7 +29,7 @@ jobs:
 
     env:
       # 운영 제어 — 초기 검증 기간: schedule도 DRY_RUN=true 고정
-      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
       # 긴급 정지 스위치 (vars 미설정 시 enabled)
       SENTIMENT_ENABLED: ${{ vars.SENTIMENT_ENABLED || 'true' }}
 
