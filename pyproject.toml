@@ -47,6 +47,7 @@ known-first-party = [
     "config",
     "core",
     "detection",
+    "engagement_loop",
     "validators",
     "tests",
 ]
