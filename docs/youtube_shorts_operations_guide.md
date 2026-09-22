@@ -181,6 +181,7 @@ Python 3.11 이상이 필요하다. FFmpeg가 없으면 manifest-only pilot을 �
 ### 7.2 영상 포함 실행
 
 ```bash
+python run_youtube_shorts.py --pilot --output-dir logs/shorts/pilot
 python run_shorts.py --pilot --output-dir logs/shorts/pilot
 ```
 
@@ -194,6 +195,7 @@ logs/shorts/pilot/pilot_short.mp4
 ### 7.3 FFmpeg 없는 실행
 
 ```bash
+python run_youtube_shorts.py --pilot --no-render --output-dir logs/shorts/pilot
 python run_shorts.py --pilot --no-render --output-dir logs/shorts/pilot
 ```
 
@@ -506,6 +508,10 @@ PLANNED → SOURCED → SCRIPTED → STORYBOARDED → MEDIA_READY
 
 ```bash
 # Offline pilot
+python run_youtube_shorts.py --pilot --output-dir logs/shorts/pilot
+
+# Manifest only
+python run_youtube_shorts.py --pilot --no-render --output-dir logs/shorts/pilot
 python run_shorts.py --pilot --output-dir logs/shorts/pilot
 
 # Manifest only
