@@ -385,6 +385,7 @@ shorts/
   prompts/            # versioned prompts
   assets/             # licensed templates; license ledger
   config/
+run_youtube_shorts.py
 run_shorts.py
 ```
 
