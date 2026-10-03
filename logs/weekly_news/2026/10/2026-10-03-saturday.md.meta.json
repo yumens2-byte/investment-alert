@@ -1,0 +1,43 @@
+{
+  "version": "1.0.0",
+  "archive_path": "logs/weekly_news/2026/10/2026-10-03-saturday.md",
+  "published_at_kst": "2026-10-03T12:45:47.316388+09:00",
+  "thread_url": "https://x.com/tiger18272/status/2106229187929411880",
+  "tweet_count": 8,
+  "tweets": [
+    {
+      "index": 1,
+      "tweet_id": "2106229187929411880"
+    },
+    {
+      "index": 2,
+      "tweet_id": "2106229189279973671"
+    },
+    {
+      "index": 3,
+      "tweet_id": "2106229190550761485"
+    },
+    {
+      "index": 4,
+      "tweet_id": "2106229192551514134"
+    },
+    {
+      "index": 5,
+      "tweet_id": "2106229193792954448"
+    },
+    {
+      "index": 6,
+      "tweet_id": "2106229195013529670"
+    },
+    {
+      "index": 7,
+      "tweet_id": "2106229196171211225"
+    },
+    {
+      "index": 8,
+      "tweet_id": "2106229197446299898"
+    }
+  ],
+  "status": "published",
+  "force_republished": false
+}
