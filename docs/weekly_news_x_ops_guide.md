@@ -283,7 +283,7 @@ git show HEAD -- logs/weekly_news/2026/05/2026-05-09-saturday.md.meta.json
 ### 4-3. 비용 안전장치
 
 - **Claude API**: console.anthropic.com에서 monthly spend limit 설정 권장
-- **X API**: Basic 등급 50K 한도 → alert.yml(45분 cron 1회=2880회/월) + weekly_news(8회/월) = 약 2890회. **여유 매우 큼**
+- **X API**: Basic 등급 50K 한도 → alert.yml(창당 최대 1건, 평일 3창 → 월 최대 약 66건 (D3 기준)) + weekly_news(8회/월) = 약 74회. **여유 매우 큼**
 - **DALL-E**: `Settings → Variables → ATTACH_IMAGE`를 미설정하면 비용 0
 
 ### 4-4. 비용 급증 트리거
@@ -410,7 +410,7 @@ A. 1) 다른 archive 파일을 PR에 포함 → 자동으로 다른 sidecar 생�
 A. sidecar는 단순 존재 여부만 체크하므로, 수정 후 재발행 시 `FORCE_REPUBLISH=true` 필요. 이때 sidecar의 `previous` 필드에 이전 발행 기록 보존.
 
 ### Q4. 기존 alert.yml과 X 한도가 충돌하지 않나?
-A. X API Basic 한도 50,000 posts/월. alert.yml은 45분 cron당 최대 1 트윗 = 약 960/월. weekly_news는 토/일 8/회 × 8회 = 64/월. **합 ~1,024/월, 한도 대비 2.1% 미만**.
+A. X API Basic 한도 50,000 posts/월. alert.yml은 창당 최대 1건, 평일 3창 → 월 최대 약 66건 (D3 기준). weekly_news는 토/일 8/회 × 8회 = 64/월. **합 ~130/월, 한도 대비 0.3% 미만**.
 
 ### Q5. PR을 검토 안 하고 자동 머지하려면?
 A. 권장 안 함. 본 시스템의 안전성은 **마스터 검수 게이트**에 의존. 자동 머지는 팩트 오류·환각 발행을 막을 수 없음.

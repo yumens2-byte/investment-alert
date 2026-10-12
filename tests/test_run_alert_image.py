@@ -1,7 +1,8 @@
 """
-제목: run_alert.py PHASE 2 이미지 통합 분기 테스트
-내용: run_alert v1.3.0의 이미지 사전 생성 + TG 첨부 발행 분기를 mock 기반 검증.
-      KIND_TONE_IMAGE_ENABLED 토글, SYSTEM_DEGRADED 제외, graceful fallback 등 5개 시나리오.
+제목: KIND 톤 이미지 관련 env 토글 / TelegramPublisher.publish_with_photo 테스트
+내용: 이미지 생성 조건(env 토글, SYSTEM_DEGRADED 제외)과 publish_with_photo 동작을 mock 기반 검증.
+      run_alert v1.4.0 은 이미지 생성 분기가 없다 (v1.3.0 _run_legacy 삭제, P5 §6.2).
+      run() 의 SYSTEM_DEGRADED → format_degraded 분기는 test_run_alert_pipeline.py 에서 검증.
 """
 from __future__ import annotations
 
@@ -163,12 +164,11 @@ def test_generate_alert_image_kind_function_exists() -> None:
 
 
 @pytest.mark.unit
-def test_run_alert_version_v130() -> None:
-    """run_alert VERSION이 1.3.0 (PHASE 2)"""
-    # run_alert.py를 import 없이 텍스트로 검증 (의존성 회피)
-    run_alert_path = Path(__file__).parent.parent / "run_alert.py"
-    content = run_alert_path.read_text(encoding="utf-8")
-    assert 'VERSION = "1.3.0"' in content
+def test_run_alert_version_v140() -> None:
+    """run_alert VERSION이 1.4.0 (P1/P2/P3/P5/P7) — 텍스트 검사 대신 속성 검사"""
+    import run_alert
+
+    assert run_alert.VERSION == "1.4.0"
 
 
 @pytest.mark.unit
@@ -177,32 +177,3 @@ def test_run_alert_imports_os_for_env() -> None:
     run_alert_path = Path(__file__).parent.parent / "run_alert.py"
     content = run_alert_path.read_text(encoding="utf-8")
     assert "import os" in content
-
-
-@pytest.mark.unit
-def test_run_alert_has_image_path_block() -> None:
-    """run_alert.py에 이미지 사전 생성 블록 존재"""
-    run_alert_path = Path(__file__).parent.parent / "run_alert.py"
-    content = run_alert_path.read_text(encoding="utf-8")
-    assert "KIND_TONE_IMAGE_ENABLED" in content
-    assert "generate_alert_image_kind" in content
-    assert "image_path" in content
-
-
-@pytest.mark.unit
-def test_run_alert_uses_publish_with_photo_for_tg() -> None:
-    """run_alert.py가 TG Free/Paid에서 publish_with_photo 호출"""
-    run_alert_path = Path(__file__).parent.parent / "run_alert.py"
-    content = run_alert_path.read_text(encoding="utf-8")
-    assert 'target="free"' in content
-    assert 'target="paid"' in content
-    assert "publish_with_photo" in content
-
-
-@pytest.mark.unit
-def test_run_alert_system_degraded_excludes_image() -> None:
-    """run_alert.py가 SYSTEM_DEGRADED를 이미지 생성에서 제외"""
-    run_alert_path = Path(__file__).parent.parent / "run_alert.py"
-    content = run_alert_path.read_text(encoding="utf-8")
-    # 조건문 패턴 확인
-    assert 'signal.level in ("L1", "L2", "L3")' in content

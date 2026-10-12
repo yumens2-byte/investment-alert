@@ -37,7 +37,12 @@ from zoneinfo import ZoneInfo
 
 from core.logger import configure_root_logger, get_logger
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"  # P4: LLM 호출 timeout
+
+# P4 (v1.1.2): LLM 호출 timeout — job timeout(10분) 이전에 fallback 되도록 상한 지정
+_LLM_TEXT_TIMEOUT_SEC: float = float(os.environ.get("KIND_LLM_TIMEOUT_SEC", "20"))
+_LLM_IMAGE_TIMEOUT_SEC: float = float(os.environ.get("KIND_IMAGE_TIMEOUT_SEC", "60"))
+_LLM_MAX_RETRIES: int = 1
 
 logger = get_logger(__name__)
 
@@ -303,7 +308,10 @@ def translate_news_to_kr(titles: list[str]) -> list[str]:
         try:
             from google import genai as _genai  # noqa: PLC0415
 
-            client = _genai.Client(api_key=api_key)
+            client = _genai.Client(
+                api_key=api_key,
+                http_options={"timeout": int(_LLM_TEXT_TIMEOUT_SEC * 1000)},  # 단위 ms
+            )
             prompt = (
                 translate_prompt
                 + "\n\n## 입력\n"
@@ -359,7 +367,11 @@ def _call_claude_l1(prompt_user: str) -> str | None:
     try:
         import anthropic  # noqa: PLC0415
 
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=_LLM_TEXT_TIMEOUT_SEC,
+            max_retries=_LLM_MAX_RETRIES,
+        )
         response = client.messages.create(
             model=model,
             max_tokens=1500,
@@ -398,7 +410,10 @@ def _call_gemini_l2_l3(prompt_user: str) -> str | None:
     try:
         from google import genai as _genai  # noqa: PLC0415
 
-        client = _genai.Client(api_key=api_key)
+        client = _genai.Client(
+            api_key=api_key,
+            http_options={"timeout": int(_LLM_TEXT_TIMEOUT_SEC * 1000)},  # 단위 ms
+        )
         # Gemini는 system role이 없으므로 합쳐서 보냄
         response = client.models.generate_content(
             model=model,
@@ -786,7 +801,10 @@ def generate_alert_image_kind(level: str, reasoning: str) -> Path | None:
     # 4) API 호출
     t1 = time.perf_counter()
     try:
-        client = _genai_local.Client(api_key=api_key)
+        client = _genai_local.Client(
+            api_key=api_key,
+            http_options={"timeout": int(_LLM_IMAGE_TIMEOUT_SEC * 1000)},  # 단위 ms
+        )
         response = client.models.generate_content(
             model=model_name,
             contents=prompt,

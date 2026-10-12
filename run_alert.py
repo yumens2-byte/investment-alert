@@ -1,63 +1,48 @@
 """
 run_alert.py
 =============
-역할: Alert 감지 + 발송
+역할: Macro-News Alert 감지 + 발송 (canonical 단일 경로)
 실행: python run_alert.py
-     python main.py alert
 
-파이프라인:
-  시장 데이터 수집 (yfinance)
-  RSS 뉴스 수집 (rss_extended)
-  → Alert 엔진 (조건 판정)
-  → 쿨다운 체크 (1시간)
-  → Alert 포맷 생성
-  → TG 발행 (무료/유료 채널)
-  → Step X: x_eligible=True Alert X 발행 (감정 트리거 또는 기본 포맷)
-  → 이력 기록
+파이프라인 (run()):
+  [Pre] DRY_RUN 아니면 ET 창 판정(core.alert_window.decide_from_env) — 창 밖/휴장일이면 즉시 종료
+  → MacroNewsLayer(NewsCollector, YouTubeCollector).detect()
+  → AlertEngine(AlertStore).process()  (쿨다운/레벨 판정)
+  → 창당 발행 claim (AlertStore.claim_window)
+  → AlertFormatter → TG free/paid/internal, X 발행 (채널별 실패 격리, 채널 간 jitter)
+  → AlertStore.update_publish_result / set_cooldown
+  → RunRecorder 가 ia_alert_run 1행 기록, main() 이 Step Summary / GITHUB_OUTPUT / 종료코드 처리
 
-이상 없으면 조용히 종료 (Alert 없음 = 정상)
+v1.4.0 (P5 부채 정리):
+  - _run_legacy 및 전용 헬퍼(_X_ALERT_*, _load/_save_x_alert_history,
+    _is_x_cooldown_active, _format_x_alert_tweet, _load_prev_snapshot) 삭제
+  - 레거시 구현은 git history 참조 (v1.3.0, 91ca4c6)
 
-Step X 설계 원칙:
-  - x_eligible=True + 쿨다운 없음  → 감정 트리거 포맷 X 발행 (post_alert_tweet)
-  - x_eligible=True + 쿨다운 중    → 기본 포맷 X 발행 (publish_tweet)
-  - x_eligible=False               → X 발행 완전 스킵 (TG만 발행)
-  - TG 발행은 항상 tweet_for_tg(기본 포맷) 사용 — X 포맷과 완전 분리
-  - AlertSignal은 dataclass → getattr() 로 x_eligible 접근 (필수)
-    _alert.get("x_eligible", False) 는 AttributeError 발생 — 사용 금지
-  - x_alert_history.json: GitHub Actions cache로 run 간 유지
-
-v1.1.0 변경사항:
-  [패치1] VIX_COUNTDOWN X 발행 제거 — x_eligible=False 설계 원칙 적용
-  [패치2] X 발행 3-way 분기 재설계 — tweet_for_tg 변수 분리
-  [패치3] store_daily_alert 단일 위치 통합 — 중복/누락 방지
-  [패치4] TG 무료 채널 tweet_for_tg 사용 — X 감정 포맷 유입 차단
-  [패치5] B-21A 밈 선생성 + TG 통합 발행 — TG free 중복 발행 제거
-
-v1.1.1 변경사항 (BUGFIX-2026-05-14):
-  [패치6] B-21A X 이미지 발행 정합성 가드 추가
-          기존: meme_path 존재 시 무조건 X 이미지 발행
-          버그: x_eligible=False Alert(VIX_L1, CPI_HOT, PCR, CRYPTO_BASIS 등)도
-                B-21A 이미지가 X에 단독 발행되어 텍스트 없이 이미지만 노출
-          수정: x_eligible=True AND tweet_id ∉ {SKIP_X, FAIL} 인 경우만 X 이미지 발행
-                정합성 가드로 정책 일관성 확보 + 텍스트/이미지 발행 atomic 보장
-          영향: TG 발행 경로는 변경 없음 (TG는 모든 alert 발행 유지)
-
-v1.1.2 변경사항 (BUGFIX-2026-05-14 P2 그룹):
-  [패치7-C] emoji_map 키 PCR → PCR_EXTREME 통일 (이슈 I-06)
-            현재 도달 불가(x_eligible=False)지만 정책 변경 대비 일관성 확보
-  [패치7-D] 운영 메트릭 요약 로그 추가 (개선6)
-            [run_alert] METRICS detected=N sent_x=M tg_only=K by_level={...} by_type={...}
-            GitHub Actions 로그 grep "METRICS"로 일별 집계 — DB 스키마 미변경
+v1.4.0 (P1/P2/P3/P7):
+  - P1: 창 판정을 core.alert_window.decide_from_env 로 위임 (NYSE 휴장일 → outcome holiday)
+  - P2: should_publish 이후 발행 직전 창 claim (claim_key = "{et_date}:{target}")
+        외부 공개 채널(X/tg_free/tg_paid) 대상일 때만 claim (내부 전용 L3/SYSTEM_DEGRADED 는 생략)
+        already_claimed → 발행 없이 종료, error → fail-open 발행(::warning::),
+        성공 채널 0(전 채널 실패/발행 중 예외) → release_claim
+  - 채널 오류 문자열 TG 봇 토큰 마스킹(_redact_secrets) 후 저장/알림
+  - P3: RunRecorder(ia_alert_run) outcome 11종 기록, main() 종료코드
+        (all_fail/error = 1, 그 외 0), partial_fail ::warning:: + 내부 TG 실패 알림,
+        update_publish_result(published_channels=...) + 실패 시 audit fallback
+  - P7: DuplicateGuard 연결 (X 만 차단, DUP_OBSERVE_ONLY 기본 true = 판정·기록만)
+  - 채널 간 jitter 2~5초 (DRY_RUN 생략, 두 번째 채널부터)
 """
-import json
+import html
 import logging
 import os
+import random as _random
+import re
 import sys
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from zoneinfo import ZoneInfo
+import time as _time
+from datetime import UTC, datetime
 
 from config.settings import DRY_RUN, LOG_LEVEL
+from core.alert_window import WindowDecision, decide_from_env
+from core.run_recorder import RunRecorder
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -66,998 +51,286 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_alert")
 
-VERSION = "1.3.0"  # PHASE 2: KIND 톤 Alert 이미지 첨부
+VERSION = "1.4.0"  # P1 gate 위임 / P2 창 claim / P3 RunRecorder·종료코드 / P5 legacy 삭제 / P7 DupGuard
 
-# ─────────────────────────────────────────────────────────────
-# Step X 전용 상수 + 유틸 함수
-# ─────────────────────────────────────────────────────────────
-# ⚠️  AlertSignal x_eligible 접근 규칙:
-#       getattr(_alert, "x_eligible", False)   ← 올바름
-#       _alert.get("x_eligible", False)        ← AttributeError (dataclass는 .get() 없음)
-
-_X_ALERT_COOLDOWN_MIN = 90                              # 동일 타입 X 재발행 최소 대기 (분)
-_X_ALERT_HISTORY_FILE = Path("x_alert_history.json")   # GitHub Actions cache로 유지
-
-
-def _load_x_alert_history() -> dict:
-    """
-    X Alert 발행 이력 로드.
-    파일 없으면 {} 반환 (FileNotFoundError 안전 처리).
-    """
-    if not _X_ALERT_HISTORY_FILE.exists():
-        return {}
-    try:
-        with open(_X_ALERT_HISTORY_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"[AlertX] 이력 로드 실패 → 빈 dict 사용: {e}")
-        return {}
-
-
-def _save_x_alert_history(history: dict) -> None:
-    """
-    X Alert 발행 이력 저장.
-    실패 시 로그만 출력 (쿨다운 소실 허용 — 하루 최대 1회 중복 가능성).
-    """
-    try:
-        with open(_X_ALERT_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"[AlertX] 이력 저장 실패 (쿨다운 다음 실행 초기화): {e}")
-
-
-def _is_x_cooldown_active(alert_type: str, history: dict) -> bool:
-    """
-    쿨다운 체크: 동일 타입의 X 발행이 쿨다운 이내 있으면 True.
-    잘못된 날짜 형식은 False 반환 (크래시 없음).
-    """
-    last_str = history.get(alert_type)
-    if not last_str:
-        return False
-    try:
-        last_dt = datetime.fromisoformat(last_str)
-        return datetime.now(UTC) - last_dt < timedelta(minutes=_X_ALERT_COOLDOWN_MIN)
-    except Exception:
-        return False
-
-
-def _format_x_alert_tweet(alert, snapshot: dict) -> str:
-    """
-    X 전용 Alert 포맷 생성 — 감정 트리거 suffix 포함.
-    500자 초과 시 본문 자름 (suffix 유지).
-
-    Args:
-        alert:    AlertSignal 객체 (dataclass)
-        snapshot: 현재 시장 스냅샷
-    """
-    from publishers.thread_builder import get_alert_emotion_suffix
-
-    alert_type = alert.alert_type
-    level      = alert.level
-    suffix     = get_alert_emotion_suffix(alert_type)
-
-    bodies = {
-        "VIX_L2": (
-            f"🚨 VIX {snapshot.get('vix', 0):.1f} 돌파 — 공포지수 극단 구간 진입\n\n"
-            f"현재 SPY {snapshot.get('sp500', 0):+.1f}%"
-            f" | Oil ${snapshot.get('oil', 0):.0f}\n\n"
-            f"변동성 35+ 구간은 역사적으로 저가 매수 기회이기도 하지만 "
-            f"추가 하락 리스크도 공존합니다."
-        ),
-        "SPY_L2": (
-            f"🔴 S&P500 {snapshot.get('sp500', 0):+.1f}% — 장중 급락 감지\n\n"
-            f"현재 VIX {snapshot.get('vix', 0):.1f}"
-            f" | Oil ${snapshot.get('oil', 0):.0f}"
-            f" | 10Y {snapshot.get('us10y', 0):.2f}%\n\n"
-            f"-3% 이상 하락은 알고리즘 매도 가속 구간입니다. "
-            f"포지션 점검이 필요한 시점."
-        ),
-        "SPY_L3": (
-            f"🆘 S&P500 {snapshot.get('sp500', 0):+.1f}% — 서킷브레이커 근접 급락\n\n"
-            f"현재 VIX {snapshot.get('vix', 0):.1f}"
-            f" | Oil ${snapshot.get('oil', 0):.0f}\n\n"
-            f"역사적 급락 구간 진입. 리스크 관리 최우선."
-        ),
-        "OIL": (
-            f"⛽ WTI 유가 ${snapshot.get('oil', 0):.0f} 돌파 — 인플레이션 재점화 신호\n\n"
-            f"현재 SPY {snapshot.get('sp500', 0):+.1f}%"
-            f" | DXY {snapshot.get('dollar_index', 0):.1f}\n\n"
-            f"유가 $100 이상은 Fed 긴축 장기화 압박으로 이어질 수 있습니다."
-        ),
-        "FED_SHOCK": (
-            f"🏦 Fed 충격 감지 — SPY {snapshot.get('sp500', 0):+.1f}%\n\n"
-            f"VIX {snapshot.get('vix', 0):.1f}"
-            f" | Fed 관련 뉴스 급증\n\n"
-            f"금리 관련 시장 충격 의심. 포지션 점검 필요."
-        ),
-        "CRISIS": (
-            f"🆘 복합 위기 시그널 감지\n\n"
-            f"VIX {snapshot.get('vix', 0):.1f}"
-            f" | SPY {snapshot.get('sp500', 0):+.1f}%"
-            f" | Oil ${snapshot.get('oil', 0):.0f}\n\n"
-            f"다중 지표 동시 경보 — 리스크 관리 최우선 구간입니다."
-        ),
-        "STAGFLATION": (
-            f"📉 스태그플레이션 공포 — SPY {snapshot.get('sp500', 0):+.1f}%\n\n"
-            f"주식·채권 동반 약세 감지 (금리 상승 + 경기 둔화)\n\n"
-            f"에너지·방산 비중 주목. 성장주 주의."
-        ),
-        "SMA200_BREAK": (
-            f"📊 SPY 200일 이동평균선 이탈 감지\n\n"
-            f"현재 SPY {snapshot.get('sp500', 0):+.1f}%"
-            f" | 기술적 약세장 진입 신호\n\n"
-            f"추세 전환 경고 — 포지션 재점검 시점."
-        ),
-    }
-
-    body  = bodies.get(
-        alert_type,
-        f"⚠️ 시장 Alert [{level}] — {alert_type}\n\n"
-        f"VIX {snapshot.get('vix', 0):.1f}"
-        f" | SPY {snapshot.get('sp500', 0):+.1f}%"
-    )
-    tweet = body + suffix
-
-    # 500자 초과 → 본문 자름, suffix 유지
-    MAX = 500
-    if len(tweet) > MAX:
-        body_max = MAX - len(suffix)
-        cut   = body.rfind("\n\n", 0, body_max)
-        body  = body[:cut] if cut > 0 else body[:body_max]
-        tweet = body + suffix
-
-    return tweet
+CHANNELS: tuple[str, ...] = ("tg_free", "tg_paid", "tg_internal", "x")
+NOTIFY_OUTCOMES: frozenset[str] = frozenset({"partial_fail", "all_fail", "error"})
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+PUBLIC_CHANNELS: tuple[str, ...] = ("tg_free", "tg_paid", "x")  # 창 claim 대상 (외부 공개)
+_TG_BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
 
 
 # ─────────────────────────────────────────────────────────────
 # 내부 유틸
 # ─────────────────────────────────────────────────────────────
 
-def _is_alert_window() -> tuple[bool, str]:
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in _TRUE_VALUES
+
+
+def _redact_secrets(text: str) -> str:
+    """오류 문자열의 TG 봇 토큰 마스킹 (requests 예외 메시지에 API URL 이 포함됨)."""
+    return _TG_BOT_TOKEN_RE.sub("bot<redacted>", text)
+
+
+def _publish_jitter() -> None:
+    """채널 간 발행 시각 분산 (안티봇). DRY_RUN 시 생략. run_sector_alert.py 패턴 동일."""
+    if DRY_RUN:
+        return
+    delay = _random.uniform(2.0, 5.0)
+    logger.debug(f"[run_alert] 채널 간 jitter sleep {delay:.2f}s")
+    _time.sleep(delay)
+
+
+def _window_skip_outcome(window: WindowDecision) -> str:
+    """창 밖 사유 분류: holiday_et: → holiday, 그 외(주말/창 밖/마감 임박) → outside_window."""
+    return "holiday" if window.reason.startswith("holiday_et:") else "outside_window"
+
+
+def _target_channels(signal, x_blocked: bool = False) -> list[str]:
+    """발행 대상 채널 목록 (DuplicateGuard 로 X 가 차단되면 X 제외)."""
+    flags = {
+        "tg_free": signal.publish_tg_free,
+        "tg_paid": signal.publish_tg_paid,
+        "tg_internal": signal.publish_tg_internal,
+        "x": signal.publish_x and not x_blocked,
+    }
+    return [ch for ch in CHANNELS if flags[ch]]
+
+
+def _decide_outcome(targets: list[str], ok: list[str], x_blocked: bool) -> str:
+    if len(ok) == len(targets):
+        return "duplicate_blocked" if x_blocked else "published"
+    return "partial_fail" if ok else "all_fail"
+
+
+# ─────────────────────────────────────────────────────────────
+# P2: 창 claim
+# ─────────────────────────────────────────────────────────────
+
+def _claim_window(alert_store, window: WindowDecision | None, signal, rec, summary: dict):
     """
-    미국 동부시간 기준 Alert 실행 허용 시간인지 판정.
-    exact match 대신 grace window를 둔다.
-    예: 09:30 target, grace=12이면 09:30:00 ~ 09:41:59 허용
+    창당 발행 1회 claim.
+
+    Returns:
+        (proceed, claim_key): proceed=False 면 already_claimed → 발행 없이 종료.
+        claim_key 는 이번 run 이 소유한 claim (release 대상), 없으면 None.
     """
-    tz_name       = os.getenv("ALERT_TZ",             "America/New_York")
-    windows_raw   = os.getenv("ALERT_WINDOWS",         "09:30,10:30,15:30")
-    grace_minutes = int(os.getenv("ALERT_GRACE_MINUTES", "12"))
+    if window is None or alert_store is None or window.target is None:
+        return True, None
+    if not any(getattr(signal, f"publish_{ch}") for ch in PUBLIC_CHANNELS):
+        # 내부 전용(L3 / SYSTEM_DEGRADED: tg_internal 만 대상) → claim 없이 발행 (PUBLISH_POLICY)
+        rec.add_detail(claim_skipped="internal_only")
+        return True, None
+    claim_key = f"{window.et_date}:{window.target}"
+    run_id = os.getenv("GITHUB_RUN_ID", "local")
+    claim = alert_store.claim_window(claim_key, signal.alert_id, run_id)
+    summary["claim_key"] = claim_key
+    if claim == "already_claimed":
+        logger.info(f"[run_alert] 창 이미 발행됨 — 스킵: claim_key={claim_key}")
+        rec.finish("claimed_already", claim_key=claim_key)
+        return False, None
+    if claim == "error":
+        logger.warning(f"[run_alert] claim 저장소 오류 — fail-open 발행 진행: {claim_key}")
+        print(f"::warning::window claim 저장소 오류 — fail-open 발행 진행: {claim_key}")
+        summary["claim_error"] = True
+        rec.add_detail(claim_error=True, claim_key=claim_key)
+        return True, None
+    rec.add_detail(claim_key=claim_key)
+    return True, claim_key
 
-    now_et  = datetime.now(ZoneInfo(tz_name))
-    weekday = now_et.weekday()  # Mon=0 ... Sun=6
 
-    if weekday >= 5:
-        return False, f"weekend_et:{now_et.isoformat()}"
+# ─────────────────────────────────────────────────────────────
+# P7: DuplicateGuard
+# ─────────────────────────────────────────────────────────────
 
-    allowed       = [x.strip() for x in windows_raw.split(",") if x.strip()]
-    now_total_min = now_et.hour * 60 + now_et.minute
+def _evaluate_dup_pre(dup_guard, alert_store, signal, result, rec):
+    """X 대상일 때 테이블 프로브 후 pre-format 판정. 불가/비대상이면 None (fail-open)."""
+    if dup_guard is None or not signal.publish_x or alert_store is None:
+        return None
+    probe_err = alert_store.probe_duplicate_guard_tables()
+    if probe_err:
+        logger.warning(f"[run_alert] DuplicateGuard 테이블 접근 불가 — fail-open 통과: {probe_err}")
+        print(f"::warning::DuplicateGuard unavailable (fail-open): {probe_err[:120]}")
+        rec.add_detail(dup_guard="unavailable", dup_guard_error=probe_err)
+        return None
+    decision = dup_guard.evaluate_pre_format(signal, result)
+    rec.add_detail(dup_guard="pre:" + decision.action)
+    if decision.action == "guard_unavailable":
+        logger.warning(f"[run_alert] DuplicateGuard pre 판정 불가(fail-open): {decision.reason}")
+        print(f"::warning::DuplicateGuard {decision.reason}")
+    return decision
 
-    for hhmm in allowed:
-        hh, mm           = map(int, hhmm.split(":"))
-        target_total_min = hh * 60 + mm
-        diff             = now_total_min - target_total_min
 
-        if -grace_minutes <= diff <= grace_minutes:
-            return True, (
-                f"inside_window_et:{now_et.isoformat()} "
-                f"target={hhmm} grace={grace_minutes}m diff={diff}m"
-            )
+def _notify_dup_suppressed(telegram, signal, decision) -> None:
+    """X 중복 억제 운영 알림 (내부 TG). 실패는 삼키고 published 집계에 포함하지 않는다."""
+    try:
+        telegram.publish_internal(
+            f"<b>[X 중복 억제]</b> {html.escape(signal.alert_id[:8])} "
+            f"level={html.escape(str(signal.level))}\n"
+            f"reason={html.escape(decision.reason)} "
+            f"prev={html.escape(str(decision.previous_alert_id or '-'))}"
+        )
+    except Exception as exc:
+        logger.warning(f"[run_alert] X 중복 억제 내부 알림 실패(무시): {type(exc).__name__}: {exc}")
 
-    return False, (
-        f"outside_window_et:{now_et.isoformat()} "
-        f"allowed={allowed} grace={grace_minutes}m"
+
+# ─────────────────────────────────────────────────────────────
+# 발행
+# ─────────────────────────────────────────────────────────────
+
+def _publish_channels(signal, result, formatter, telegram, x_publisher_cls,
+                      dup_guard, dup_decision, rec, published: dict, errors: dict) -> bool:
+    """
+    채널별 발행 (실패 격리 + 두 번째 채널부터 jitter).
+    published / errors 는 호출자 소유 dict 를 직접 갱신한다 (중도 예외 시에도 성공 채널 판별용).
+
+    Returns:
+        x_blocked: DuplicateGuard 로 X 발행이 차단되었으면 True
+    """
+    sent_any = [False]
+    top_news = signal.top_news_titles
+    top_youtube = signal.top_youtube_titles
+
+    tg_text = formatter.format_tg(
+        signal.level, signal.score, signal.reasoning, top_news, top_youtube,
+        signal.health_score, signal.alert_id,
+    )
+    internal_text = (
+        formatter.format_degraded(signal.dq_state_dict, signal.alert_id)
+        if signal.level == "SYSTEM_DEGRADED"
+        else formatter.format_internal(
+            signal.level, signal.score, signal.reasoning, top_news, top_youtube,
+            signal.health_score, signal.alert_id,
+        )
     )
 
+    def _before_send() -> None:
+        if sent_any[0]:
+            _publish_jitter()
+        sent_any[0] = True
 
-def _load_prev_snapshot() -> dict:
-    """직전 core_data.json에서 이전 스냅샷 로드 (급변 감지용)"""
-    from config.settings import CORE_DATA_FILE
-    try:
-        if CORE_DATA_FILE.exists():
-            with open(CORE_DATA_FILE, encoding="utf-8") as f:
-                envelope = json.load(f)
-            return envelope.get("data", {}).get("market_snapshot", {})
-    except Exception:
-        pass
-    return {}
+    def _publish(channel: str, operation):
+        _before_send()
+        try:
+            value = operation()
+            published[channel] = True
+            return value
+        except Exception as exc:
+            errors[channel] = _redact_secrets(f"{type(exc).__name__}: {exc}")[:500]
+            logger.error(f"[run_alert] {channel} 발행 실패 (다른 채널 계속): {errors[channel]}")
+            return None
+
+    if signal.publish_tg_free:
+        _publish("tg_free", lambda: telegram.publish_free(tg_text))
+    if signal.publish_tg_paid:
+        _publish("tg_paid", lambda: telegram.publish_paid(tg_text))
+    if signal.publish_tg_internal:
+        _publish("tg_internal", lambda: telegram.publish_internal(internal_text))
+
+    x_blocked = False
+    if signal.publish_x:
+        x_text = formatter.format_x(
+            signal.level, signal.score, signal.reasoning, top_news,
+            force_template=DRY_RUN,
+        )
+        decision = dup_decision
+        if decision is not None and not decision.suppress_x:
+            post = dup_guard.evaluate_post_format(signal, x_text, decision.topic_key)
+            if post.suppress_x:
+                decision = post
+        blocked = decision is not None and decision.suppress_x
+        observe_only = _env_bool("DUP_OBSERVE_ONLY", True)
+
+        if blocked and not observe_only:
+            x_blocked = True
+            logger.info(
+                f"[run_alert] X 중복 억제: {decision.reason} prev={decision.previous_alert_id}"
+            )
+            _before_send()
+            _notify_dup_suppressed(telegram, signal, decision)
+        else:
+            if blocked:
+                logger.info(f"[run_alert] (observe) X 중복 판정이나 발행 진행: {decision.reason}")
+            tweet_id = _publish("x", lambda: x_publisher_cls(dry_run=DRY_RUN).publish(x_text))
+            if published["x"] and decision is not None:
+                dup_guard.record_x_fingerprint(
+                    signal.alert_id, decision.topic_key, x_text, tweet_id,
+                )
+
+        if decision is not None:
+            dup_guard.record_topic_observation(
+                signal, result, decision, x_published=published["x"],
+            )
+            rec.add_detail(
+                dup_action=decision.action,
+                dup_reason=decision.reason,
+                dup_observe_only=observe_only,
+                dup_would_block=blocked,
+                dup_similarity=decision.similarity_score,
+                dup_previous_alert_id=decision.previous_alert_id,
+            )
+
+    return x_blocked
+
+
+def _record_publish_result(alert_store, signal, published: dict, errors: dict,
+                           ok: list[str]) -> None:
+    """ia_alert_history 발행 결과 반영. 실패(False) 시 로컬 audit fallback (raise 없음)."""
+    updated = alert_store.update_publish_result(
+        signal.alert_id,
+        x_published=published["x"],
+        tg_free_published=published["tg_free"],
+        tg_paid_published=published["tg_paid"],
+        tg_internal_published=published["tg_internal"],
+        x_error=errors.get("x"),
+        tg_free_error=errors.get("tg_free"),
+        tg_paid_error=errors.get("tg_paid"),
+        tg_internal_error=errors.get("tg_internal"),
+        published_channels=ok,
+    )
+    if updated is False:
+        from core.audit_fallback import append_audit_fallback
+        append_audit_fallback({
+            "stage": "update_publish_result",
+            "alert_id": signal.alert_id,
+            "level": signal.level,
+            "score": signal.score,
+            "published": dict(published),
+            "published_channels": ok,
+            "errors": dict(errors),
+            "reason": "update_publish_result_returned_false",
+        })
 
 
 # ─────────────────────────────────────────────────────────────
 # 메인 실행
 # ─────────────────────────────────────────────────────────────
 
-def _run_legacy() -> dict:
-    logger.info("=" * 50)
-    logger.info(f"[run_alert] v{VERSION} 시작 | DRY_RUN={DRY_RUN}")
-    logger.info("=" * 50)
-
-    # ── Pre-Step: 미국 동부시간 Alert 윈도우 체크 ─────────────
+def _run_pipeline(alert_store, rec: RunRecorder) -> dict:
+    """창 판정 → 감지 → claim → 발행 → 기록. outcome 은 rec.finish 로 확정한다."""
+    window: WindowDecision | None = None
     if DRY_RUN:
         logger.info("[run_alert] DRY_RUN — 시간 윈도우 체크 생략, 강제 실행")
     else:
-        should_run, reason = _is_alert_window()
-        if not should_run:
-            logger.info(f"[run_alert] 시간 윈도우 아님 — 스킵: {reason}")
-            return {"alerts_detected": 0, "alerts_sent": 0, "reason": "outside_window"}
-        logger.info(f"[run_alert] 시간 윈도우 통과: {reason}")
-
-    # ── Step 0: DLQ 재처리 (B-17) ────────────────────────────
-    try:
-        from core.dlq import get_queue_size, process_queue
-        q_size = get_queue_size()
-        if q_size > 0:
-            logger.info(f"[Step 0] DLQ 재처리 시작: {q_size}건")
-            dlq_result = process_queue()
-            logger.info(f"[Step 0] DLQ 완료: {dlq_result}")
-        else:
-            logger.info("[Step 0] DLQ 비어있음 — 스킵")
-    except Exception as e:
-        logger.warning(f"[Step 0] DLQ 처리 실패 (영향 없음): {e}")
-
-    # ── Step 1: 데이터 수집 ────────────────────────────────────
-    logger.info("[Step 1] 시장 데이터 + RSS 수집")
-    from collectors.news_rss import collect_news_sentiment
-    from collectors.yahoo_finance import collect_market_snapshot
-
-    prev_snapshot = _load_prev_snapshot()
-    snapshot      = collect_market_snapshot()
-    news_result   = collect_news_sentiment()
-
-    # ── Step 1-T2: Priority A — Tier2 + SPY SMA + FRED (v1.6.0 신규) ──
-    tier2_data = {}
-    try:
-        from collectors.yahoo_finance import collect_tier2_market_data
-        tier2_data = collect_tier2_market_data()
-        logger.info(
-            f"[Step 1-T2] Tier2 수집 완료 | "
-            f"IWM={tier2_data.get('iwm_change')} "
-            f"TLT={tier2_data.get('tlt_change')} "
-            f"MOVE={tier2_data.get('move_index')}"
-        )
-    except Exception as e:
-        logger.warning(f"[Step 1-T2] Tier2 수집 실패 (Alert 영향 없음): {e}")
-
-    spy_sma_data = {}
-    try:
-        from collectors.yahoo_finance import collect_spy_sma
-        spy_sma_data = collect_spy_sma()
-        logger.info(
-            f"[Step 1-SMA] SPY SMA 수집 완료 | "
-            f"Price=${spy_sma_data.get('spy_price')} "
-            f"SMA50=${spy_sma_data.get('spy_sma50')} "
-            f"SMA200=${spy_sma_data.get('spy_sma200')}"
-        )
-    except Exception as e:
-        logger.warning(f"[Step 1-SMA] SPY SMA 수집 실패 (Alert 영향 없음): {e}")
-
-    fred_data_alert = {}
-    try:
-        from collectors.fred_client import collect_macro_data
-        fred_data_alert = collect_macro_data()
-        logger.info(
-            f"[Step 1-FRED] FRED 수집 완료 | "
-            f"spread={fred_data_alert.get('spread_2y10y_bp')}bp "
-            f"us2y={fred_data_alert.get('us2y')}%"
-        )
-    except Exception as e:
-        logger.warning(f"[Step 1-FRED] FRED 수집 실패 (Alert 영향 없음): {e}")
-
-    # ── Step 1-M: FRED 경제지표 변화 감지 ─────────────────────
-    try:
-        from collectors.fred_client import collect_macro_data, detect_macro_changes
-        from core.alert_history import record_alert as _rec
-        from core.alert_history import should_send as _should_send
-        from publishers.econ_event_formatter import format_econ_event, format_econ_event_telegram
-        from publishers.telegram_publisher import send_message as tg_send
-        from publishers.x_publisher import publish_tweet as x_pub
-
-        prev_macro = {}
-        try:
-            from core.json_builder import load_core_data
-            prev_data  = load_core_data()
-            prev_macro = prev_data.get("macro_data", {})
-        except Exception:
-            pass
-
-        cur_macro     = collect_macro_data()
-        macro_changes = detect_macro_changes(cur_macro, prev_macro)
-
-        try:
-            from core.json_builder import load_core_data as _lcd
-            _cd     = _lcd()
-            _regime = _cd.get("market_regime", {}).get("market_regime",   "—")
-            _signal = _cd.get("trading_signal", {}).get("trading_signal", "HOLD")
-        except Exception:
-            _regime, _signal = "—", "HOLD"
-
-        for mc in macro_changes:
-            iid = mc["indicator_id"]
-            _send, _reason = _should_send(f"ECON_{iid}", "L1")
-            if not _send:
-                logger.info(f"[Step 1-M] 경제지표 차단: {iid} — {_reason}")
-                continue
-
-            logger.info(f"[Step 1-M] 경제지표 변화: {iid} {mc['prev']} → {mc['new']}")
-
-            tweet  = format_econ_event(iid, mc["prev"], mc["new"], _regime, _signal)
-            tg_txt = format_econ_event_telegram(iid, mc["prev"], mc["new"], _regime, _signal)
-
-            res = x_pub(tweet)
-            _rec(f"ECON_{iid}", "L1", str(res.get("tweet_id", "FAIL")), tweet)
-            tg_send(tg_txt, channel="free")
-            logger.info(f"[Step 1-M] 경제지표 발행 완료: {iid}")
-    except Exception as e:
-        logger.warning(f"[Step 1-M] 경제지표 감지 실패 (영향 없음): {e}")
-
-    # ── Step 2: Alert 엔진 실행 ────────────────────────────────
-    logger.info("[Step 2] Alert 엔진 실행")
-
-    # ── Step 2-B5: ETF 랭킹 변화 감지 ─────────────────────────
-    rank_change        = None
-    signal_diff_result = None
-    signals_for_alert  = {}
-    try:
-        from core.json_builder import load_core_data as _lcd_rank
-        from core.rank_tracker import detect_rank_change
-        from core.signal_diff import compute_signal_diff
-
-        _cd         = _lcd_rank()
-        _data       = _cd.get("data", {})
-        new_rank    = _data.get("etf_analysis", {}).get("etf_rank", {})
-        new_signals = _data.get("signals", {})
-        signals_for_alert = new_signals
-
-        if new_rank:
-            rank_change = detect_rank_change(new_rank)
-
-            if rank_change:
-                _prev_signals = {}
-                try:
-                    from core.regime_tracker import _load as _rt_load
-                    _rt_data      = _rt_load()
-                    _prev_signals = _rt_data.get("last_signals", {})
-                except Exception:
-                    pass
-
-                if _prev_signals:
-                    signal_diff_result = compute_signal_diff(_prev_signals, new_signals)
-                    logger.info(
-                        f"[Step 2-B5] 랭킹 변화 원인: "
-                        f"{signal_diff_result.get('summary', 'N/A')}"
-                    )
-    except Exception as e:
-        logger.warning(f"[Step 2-B5] ETF 랭킹 감지 실패 (영향 없음): {e}")
-
-    # ── Step 2-B6: 레짐 전환 감지 ──────────────────────────────
-    regime_change     = None
-    score_diff_result = None
-    try:
-        from core.json_builder import load_core_data as _lcd_regime
-        from core.regime_tracker import detect_regime_change
-        from core.signal_diff import compute_score_diff
-        from core.signal_diff import compute_signal_diff as _sd2
-
-        _cd2           = _lcd_regime()
-        _data2         = _cd2.get("data", {})
-        new_regime     = _data2.get("market_regime", {}).get("market_regime",     "")
-        new_risk_level = _data2.get("market_regime", {}).get("market_risk_level", "")
-        new_mkt_score  = _data2.get("market_score", {})
-        new_signals_r  = _data2.get("signals", {})
-
-        if new_regime:
-            regime_change = detect_regime_change(
-                new_regime, new_risk_level, new_mkt_score, new_signals_r
-            )
-
-            if regime_change:
-                old_score         = regime_change.get("old_market_score", {})
-                new_score         = regime_change.get("new_market_score", {})
-                score_diff_result = compute_score_diff(old_score, new_score)
-
-                if signal_diff_result is None:
-                    old_sigs           = regime_change.get("old_signals", {})
-                    signal_diff_result = _sd2(old_sigs, new_signals_r)
-
-                logger.info(
-                    f"[Step 2-B6] 레짐 전환: {regime_change.get('old_regime')} → "
-                    f"{regime_change.get('new_regime')} | "
-                    f"원인: {signal_diff_result.get('summary', 'N/A')}"
-                )
-    except Exception as e:
-        logger.warning(f"[Step 2-B6] 레짐 전환 감지 실패 (영향 없음): {e}")
-
-    from engines.alert_engine import run_alert_engine
-    alerts = run_alert_engine(
-        snapshot, news_result, prev_snapshot or None,
-        rank_change=rank_change,
-        regime_change=regime_change,
-        signal_diff_result=signal_diff_result,
-        score_diff_result=score_diff_result,
-        signals=signals_for_alert,
-        tier2_data=tier2_data,
-        fred_data=fred_data_alert,
-        spy_sma_data=spy_sma_data,
-    )
-
-    if not alerts:
-        logger.info("[run_alert] Alert 없음 — 정상 종료")
-        return {"alerts_detected": 0, "alerts_sent": 0}
-
-    # ── Step 2.5: 발행 직전 Validation Gate ───────────────────
-    logger.info("[Step 2.5] Alert 발행 전 Validation Gate")
-
-    _snap_valid  = True
-    _snap_errors = []
-    vix_val      = snapshot.get("vix",   0)
-    spy_val      = snapshot.get("sp500", 0)
-
-    if vix_val <= 0:
-        _snap_errors.append(f"VIX 비정상: {vix_val}")
-        _snap_valid = False
-    if spy_val == 0 and vix_val == 0:
-        _snap_errors.append("SPY/VIX 모두 0 — 수집 실패 의심")
-        _snap_valid = False
-
-    if not _snap_valid:
-        logger.error(
-            f"[Step 2.5] 스냅샷 Validation FAIL — Alert 발행 차단: {_snap_errors}"
-        )
-        return {
-            "alerts_detected": len(alerts),
-            "alerts_sent":     0,
-            "reason":          "snapshot_validation_fail",
-            "errors":          _snap_errors,
-        }
-
-    _core_valid = True
-    try:
-        from core.json_builder import load_core_data as _lcd_val
-        from core.validator import validate_data as _vd
-
-        _cd_val   = _lcd_val()
-        _data_val = _cd_val.get("data", {})
-
-        if _data_val:
-            _vr = _vd(_data_val)
-            if _vr["status"] != "PASS":
-                logger.warning(
-                    f"[Step 2.5] core_data Validation FAIL: {_vr.get('errors')}"
-                    " — B-5/B-6 Alert 차단, 기존 Alert는 허용"
-                )
-                _core_valid = False
-    except Exception as e:
-        logger.info(f"[Step 2.5] core_data 로드 불가 — B-5/B-6 미동작 (정상): {e}")
-        _core_valid = False
-
-    if not _core_valid:
-        before  = len(alerts)
-        alerts  = [a for a in alerts if a.alert_type not in ("ETF_RANK", "REGIME_CHANGE")]
-        removed = before - len(alerts)
-        if removed > 0:
-            logger.warning(
-                f"[Step 2.5] core_data FAIL → B-5/B-6 Alert {removed}건 제거"
-            )
-
-        if not alerts:
-            logger.info("[run_alert] Validation 후 발행 가능 Alert 없음 — 종료")
-            return {
-                "alerts_detected": before,
-                "alerts_sent":     0,
-                "reason":          "validation_filtered",
-            }
-
-    logger.info(f"[Step 2.5] Validation PASS — {len(alerts)}건 발행 진행")
-
-    # ── Step 3: 쿨다운 체크 + 발송 ────────────────────────────
-    from core.alert_history import record_alert, should_send
-    from publishers.alert_formatter import format_alert_tweet
-    from publishers.x_publisher import publish_tweet
-
-    sent_count = 0
-    results    = []
-    x_history  = _load_x_alert_history()
-
-    # core_data 로드 (유료 채널 + B-21A 밈에서 사용)
-    data = {}
-    try:
-        from core.json_builder import load_core_data as _lcd_step3
-        _cd_step3 = _lcd_step3()
-        data      = _cd_step3.get("data", {})
-    except Exception:
-        pass
-
-    for signal in alerts:
-
-        # ── [패치1] VIX_COUNTDOWN: X 발행 제거 — x_eligible=False 원칙 적용 ──
-        # 설계: VIX_COUNTDOWN은 사전 경고 정보성 알람 → TG 전용 발행
-        if signal.alert_type == "VIX_COUNTDOWN":
-            from core.alert_history import record_countdown, should_send_countdown
-            from publishers.alert_formatter import format_countdown_tweet
-            vix_now   = signal.snapshot.get("vix", 0)
-            from engines.alert_engine import VIX_COUNTDOWN_LEVELS
-            triggered = max(
-                (lvl for lvl in VIX_COUNTDOWN_LEVELS if vix_now >= lvl), default=None
-            )
-            if triggered is None:
-                continue
-            send, reason = should_send_countdown(triggered)
-            if not send:
-                logger.info(f"[run_alert] VIX 카운트다운 차단: {reason}")
-                continue
-
-            logger.info(f"[run_alert] VIX 카운트다운 TG 발행: VIX {triggered} — {reason}")
-            tweet_cd = format_countdown_tweet(signal)
-            # X 발행 없음 — x_eligible=False
-            try:
-                from publishers.telegram_publisher import send_message
-                send_message(f"⚠️ <b>VIX 카운트다운</b>\n\n{tweet_cd}", channel="free")
-                record_countdown(triggered, "TG_ONLY")
-                sent_count += 1
-                logger.info(f"[run_alert] VIX 카운트다운 TG 발행 완료: VIX {triggered}")
-            except Exception as e:
-                logger.warning(f"[run_alert] TG 카운트다운 발송 실패: {e}")
-
-            results.append({
-                "type": "VIX_COUNTDOWN", "level": triggered,
-                "tweet_id": "TG_ONLY", "x_skipped": True,
-            })
-            continue
-
-        # ── 쿨다운 체크 ───────────────────────────────────────
-        send, reason = should_send(signal.alert_type, signal.level)
-        if not send:
-            logger.info(
-                f"[run_alert] 발송 차단: {signal.alert_type}/{signal.level} — {reason}"
-            )
-            continue
-        logger.info(
-            f"[run_alert] 발송 결정: {signal.alert_type}/{signal.level} — {reason}"
-        )
-
-        # ── [패치2] X 발행 3-way 분기 + tweet_for_tg 완전 분리 ──
-        # tweet_for_tg: TG 발행에 사용하는 기본 포맷 (X 발행 경로와 독립)
-        # X 발행 경로에 따라 tweet_for_tg 값이 변경되지 않음을 보장
-        _x_elig    = getattr(signal, "x_eligible", False)
-        _x_cool    = _is_x_cooldown_active(signal.alert_type, x_history)
-        tweet_for_tg = format_alert_tweet(signal)   # TG용 — 항상 기본 포맷
-        tweet_id     = "SKIP_X"                     # X 발행 없는 경우 기본값
-
-        if _x_elig and not _x_cool:
-            # 케이스 A: x_eligible=True, 쿨다운 없음 → 감정 트리거 포맷 X 발행
-            from publishers.x_publisher import post_alert_tweet
-            tweet_for_x = _format_x_alert_tweet(signal, snapshot)
-            logger.info(
-                f"[run_alert] X 감정 발행 예정 [{signal.alert_type}/{signal.level}] "
-                f"({len(tweet_for_x)}자)"
-            )
-            _x_ok    = post_alert_tweet(tweet_for_x, dry_run=DRY_RUN)
-            tweet_id = "EMOTION" if _x_ok else "FAIL"
-            if _x_ok:
-                x_history[signal.alert_type] = datetime.now(UTC).isoformat()
-                record_alert(signal.alert_type, signal.level, tweet_id, tweet_for_x)
-                sent_count += 1
-                logger.info(
-                    f"[run_alert] X 감정 발행 완료: {signal.alert_type}/{signal.level}"
-                )
-            else:
-                logger.error(
-                    f"[run_alert] X 감정 발행 실패: {signal.alert_type}/{signal.level}"
-                )
-
-        elif _x_elig and _x_cool:
-            # 케이스 B: x_eligible=True, 쿨다운 중 → 기본 포맷 X 발행 (감정 포맷 중복 방지)
-            logger.info(
-                f"[run_alert] X 쿨다운 중 — 기본 포맷으로 발행: "
-                f"{signal.alert_type}/{signal.level}"
-            )
-            logger.info(
-                f"[run_alert] 발행 예정 [{signal.alert_type}/{signal.level}] "
-                f"({len(tweet_for_tg)}자)\n{tweet_for_tg}"
-            )
-            result   = publish_tweet(tweet_for_tg)
-            tweet_id = result.get("tweet_id", "FAIL")
-            if result.get("success"):
-                record_alert(signal.alert_type, signal.level, str(tweet_id), tweet_for_tg)
-                sent_count += 1
-                logger.info(
-                    f"[run_alert] X 기본 발행 완료: "
-                    f"{signal.alert_type}/{signal.level} → {tweet_id}"
-                )
-            else:
-                logger.error(
-                    f"[run_alert] X 기본 발행 실패: {signal.alert_type}/{signal.level}"
-                )
-
-        else:
-            # 케이스 C: x_eligible=False → X 발행 완전 스킵 (TG만 진행)
-            logger.info(
-                f"[run_alert] x_eligible=False — X 발행 스킵: "
-                f"{signal.alert_type}/{signal.level}"
-            )
-
-        # ── [패치3] Supabase store_daily_alert 단일 위치 통합 ──
-        # X 발행 성공한 경우만 적재 (SKIP_X, FAIL 제외)
-        if tweet_id not in ("SKIP_X", "FAIL"):
-            try:
-                from db.daily_store import store_daily_alert
-                store_daily_alert(
-                    alert_type=signal.alert_type,
-                    alert_level=signal.level,
-                    trigger_value=signal.reason[:100] if signal.reason else "",
-                    tweet_id=str(tweet_id),
-                )
-            except Exception as db_err:
-                logger.warning(f"[run_alert] Alert DB 적재 실패 (무시): {db_err}")
-
-        # ── PHASE 2: KIND 톤 이미지 선생성 ────────────────────
-        # 명시적으로 두 기능을 모두 켠 L1/L2/L3 Alert만 생성한다.
-        # SYSTEM_DEGRADED 등 운영 경보는 이미지 생성 대상에서 제외하며,
-        # 생성 실패 시 기존 텍스트 발행 경로를 그대로 사용한다.
-        image_path = None
-        _kind_enabled = os.environ.get("KIND_TONE_ENABLED", "").lower() in (
-            "true", "1", "yes",
-        )
-        _image_enabled = os.environ.get(
-            "KIND_TONE_IMAGE_ENABLED", ""
-        ).lower() in ("true", "1", "yes")
-        if (
-            _kind_enabled
-            and _image_enabled
-            and signal.level in ("L1", "L2", "L3")
-            and os.environ.get("GEMINI_API_KEY", "")
-        ):
-            try:
-                from publishers.alert_formatter_kind import generate_alert_image_kind
-
-                image_path = generate_alert_image_kind(
-                    level=signal.level,
-                    reasoning=getattr(
-                        signal, "reasoning", getattr(signal, "reason", "")
-                    ) or "",
-                )
-                if image_path:
-                    logger.info(f"[run_alert] KIND 이미지 생성 성공: {image_path}")
-            except Exception as e:
-                logger.warning(
-                    f"[run_alert] KIND 이미지 생성 실패 — 텍스트 fallback: {e}"
-                )
-                image_path = None
-
-        # ── [패치5] B-21A 밈 이미지 선생성 ───────────────────
-        # TG 발행 전에 미리 생성하여 TG free 통합 발행에 활용
-        meme_path = None
-        try:
-            from comic.meme_generator import generate_meme
-            meme_path = generate_meme(
-                alert_type=signal.alert_type,
-                alert_level=signal.level,
-                snapshot=snapshot,
-                core_data=data,
-            )
-        except Exception as e:
-            logger.warning(f"[run_alert] B-21A 밈 생성 실패 (영향 없음): {e}")
-
-        # ── [패치4] TG 무료 채널 — tweet_for_tg 사용, B-5/B-6 전용 포맷 우선 ──
-        # tweet_for_tg는 항상 기본 포맷 — X 감정 포맷 유입 차단
-        # 밈 이미지 있으면 TG 텍스트+이미지 통합 단일 발행 (중복 발행 제거)
-        try:
-            from publishers.telegram_publisher import send_message, send_photo
-
-            if signal.alert_type == "ETF_RANK" and rank_change:
-                # B-5: ETF 랭킹 상세 포맷 (원인 분석 포함)
-                from publishers.alert_formatter import format_etf_rank_telegram
-                _tg_regime = ""
-                try:
-                    from core.json_builder import load_core_data as _lcd_tg
-                    _tg_regime = (
-                        _lcd_tg().get("data", {})
-                                 .get("market_regime", {})
-                                 .get("market_regime", "")
-                    )
-                except Exception:
-                    pass
-                tg_text = format_etf_rank_telegram(
-                    rank_change, signal_diff_result, _tg_regime
-                )
-                send_message(tg_text, channel="free")
-                logger.info("[run_alert] TG 무료 B-5 상세 포맷 발송 완료")
-
-            elif signal.alert_type == "REGIME_CHANGE" and regime_change:
-                # B-6: 레짐 전환 상세 포맷 (Score + 시그널 원인)
-                from publishers.alert_formatter import format_regime_change_telegram
-                _tg_signal = ""
-                _tg_top1   = ""
-                try:
-                    from core.json_builder import load_core_data as _lcd_tg2
-                    _tg_d2     = _lcd_tg2().get("data", {})
-                    _tg_signal = _tg_d2.get("trading_signal", {}).get("trading_signal", "")
-                    _tg_rank   = _tg_d2.get("etf_analysis",  {}).get("etf_rank", {})
-                    if _tg_rank:
-                        _tg_top1 = min(_tg_rank, key=_tg_rank.get)
-                except Exception:
-                    pass
-                tg_text = format_regime_change_telegram(
-                    regime_change, signal_diff_result, score_diff_result,
-                    _tg_signal, _tg_top1,
-                )
-                send_message(tg_text, channel="free")
-                logger.info("[run_alert] TG 무료 B-6 상세 포맷 발송 완료")
-
-            else:
-                # 일반 Alert: tweet_for_tg(기본 포맷) 사용
-                tg_text = f"🚨 <b>Investment OS Alert</b>\n\n{tweet_for_tg}"
-                if image_path is not None:
-                    # KIND 이미지는 알림당 한 번 생성해 Free/Paid에서 재사용한다.
-                    from publishers.telegram_publisher import TelegramPublisher
-                    try:
-                        TelegramPublisher(dry_run=DRY_RUN).publish_with_photo(
-                            tg_text, image_path, target="free"
-                        )
-                        logger.info(
-                            f"[run_alert] TG 무료 KIND 이미지 발행: "
-                            f"{signal.alert_type}/{signal.level}"
-                        )
-                    except Exception as image_error:
-                        logger.warning(
-                            f"[run_alert] TG 무료 이미지 발행 실패 — "
-                            f"텍스트 fallback: {image_error}"
-                        )
-                        send_message(tg_text, channel="free")
-                elif meme_path:
-                    # [패치5] 이미지 있으면 캡션+이미지 통합 단일 발행 (텍스트 별도 없음)
-                    send_photo(meme_path, caption=tg_text, channel="free")
-                    logger.info(
-                        f"[run_alert] TG 무료 이미지+캡션 통합 발행: "
-                        f"{signal.alert_type}/{signal.level}"
-                    )
-                else:
-                    send_message(tg_text, channel="free")
-                    logger.info(
-                        f"[run_alert] TG 무료 텍스트 발행: "
-                        f"{signal.alert_type}/{signal.level}"
-                    )
-
-            logger.info(
-                f"[run_alert] TG 무료 채널 발송 완료: "
-                f"{signal.alert_type}/{signal.level}"
-            )
-        except Exception as e:
-            logger.warning(f"[run_alert] TG 무료 발송 예외 (X 발행 영향 없음): {e}")
-
-        # ── TG 유료 채널 ───────────────────────────────────────
-        try:
-            vix_crossed = getattr(signal, "vix_premium_crossed", False)
-            vix_level   = getattr(signal, "vix_premium_level",   None)
-            prev_vix    = getattr(signal, "prev_vix",            0)
-
-            snap    = data.get("market_snapshot", {})
-            regime  = data.get("market_regime",  {}).get("market_regime",    "—")
-            risk    = data.get("market_regime",  {}).get("market_risk_level", "—")
-            matrix  = data.get("trading_signal", {}).get("signal_matrix", {})
-            buy     = matrix.get("buy_watch", [])
-            sig_val = data.get("trading_signal", {}).get("trading_signal", "HOLD")
-
-            from publishers.premium_alert_formatter import (
-                format_regime_change_premium,
-                format_vix_premium,
-            )
-            from publishers.telegram_publisher import TelegramPublisher
-            from publishers.telegram_publisher import send_message as tg_send
-
-            def _send_paid(text: str, _image_path=image_path) -> None:
-                """유료 채널 발행 시 현재 Alert의 이미지 경로를 고정해 사용한다."""
-                if _image_path is not None:
-                    try:
-                        TelegramPublisher(dry_run=DRY_RUN).publish_with_photo(
-                            text, _image_path, target="paid"
-                        )
-                    except Exception as image_error:
-                        logger.warning(
-                            f"[run_alert] TG 유료 이미지 발행 실패 — "
-                            f"텍스트 fallback: {image_error}"
-                        )
-                        tg_send(text, channel="paid")
-                else:
-                    tg_send(text, channel="paid")
-
-            if vix_crossed and vix_level:
-                vix_now = snap.get("vix", 0)
-                pm_text = format_vix_premium(vix_now, prev_vix, regime, risk)
-                _send_paid(pm_text)
-                logger.info(f"[run_alert] 유료 채널 VIX {vix_level} 알람 발송")
-
-            if signal.alert_type in ("CRISIS", "FED_SHOCK"):
-                pm_text = format_regime_change_premium(
-                    "—", regime, sig_val, risk, buy
-                )
-                _send_paid(pm_text)
-                logger.info("[run_alert] 유료 채널 레짐 전환 알람 발송")
-
-            # B-6: 레짐 전환 L2 → 프리미엄 Score + 전략
-            if (
-                signal.alert_type == "REGIME_CHANGE"
-                and signal.level   == "L2"
-                and regime_change
-            ):
-                from publishers.premium_alert_formatter import format_regime_change_premium_v2
-                _etf_rank = data.get("etf_analysis", {}).get("etf_rank", {})
-                _etf_top1 = (
-                    min(_etf_rank, key=_etf_rank.get) if _etf_rank else ""
-                )
-                pm_text = format_regime_change_premium_v2(
-                    regime_change,
-                    signal_diff_result=signal_diff_result,
-                    score_diff_result=score_diff_result,
-                    trading_signal=sig_val,
-                    etf_top1=_etf_top1,
-                    etf_hints=signal.etf_hints,
-                    avoid_etfs=signal.avoid_etfs,
-                )
-                _send_paid(pm_text)
-                logger.info("[run_alert] 유료 채널 B-6 레짐 전환 프리미엄 발송")
-
-        except Exception as e:
-            logger.warning(f"[run_alert] 유료 채널 알람 예외 (영향 없음): {e}")
-
-        # ── [패치5] B-21A: X 이미지 발행 (TG와 독립, meme_path 재사용) ──
-        # TG 통합 발행은 위에서 완료. 여기서는 X 이미지만 발행.
-        # ── [패치6 / BUGFIX-2026-05-14] x_eligible + tweet_id 정합성 가드 ──
-        #     [현상]
-        #       x_eligible=False 인 Alert(예: VIX_L1, CPI_HOT_L1, PCR, CRYPTO_BASIS,
-        #       VIX_COUNTDOWN, ETF_RANK, REGIME_CHANGE, MOVE_SPIKE, SOFR_STRESS,
-        #       SMA200_BREAK_L1, YIELD_SPREAD_DEEP, OIL_L1(급등률만))도
-        #       B-21A 밈 이미지가 X에 단독 발행되어, X 타임라인에
-        #       "이미지만 있고 본문 텍스트는 없는" 비정상 알람이 노출됨.
-        #     [원인]
-        #       기존 코드는 `if meme_path:` 단일 조건으로 X 이미지를 발행.
-        #       케이스 C(x_eligible=False) 또는 X 텍스트 발행 실패(SKIP_X/FAIL)
-        #       상황을 가드하지 못함.
-        #     [정책]
-        #       - x_eligible=True 이고 X 텍스트 발행이 성공한 경우에만 X 이미지 발행
-        #       - 그 외는 TG 이미지만 발행하고 X 이미지는 스킵
-        #       (TG 발행은 위쪽 블록에서 이미 처리 완료 — 영향 없음)
-        _x_image_ok = _x_elig and tweet_id not in ("SKIP_X", "FAIL")
-        if meme_path and _x_image_ok:
-            try:
-                from publishers.x_publisher import publish_tweet_with_image
-                _em_map = {
-                    "VIX":           "📊",
-                    "OIL":           "⛽",
-                    "SPY":           "📉",
-                    "CRISIS":        "🚨",
-                    "FED_SHOCK":     "🏦",
-                    "STAGFLATION":   "🔥",
-                    "SMA200_BREAK":  "📉",
-                    # P2-C (BUGFIX-2026-05-14): 키 mismatch 수정 (PCR → PCR_EXTREME)
-                    # 실제 AlertSignal.alert_type 은 "PCR_EXTREME"
-                    # 현재는 x_eligible=False라 도달 불가하지만 정책 변경 대비
-                    "PCR_EXTREME":   "📊",
-                    "CRYPTO_BASIS":  "₿",
-                }
-                _em   = _em_map.get(signal.alert_type, "⚡")
-                _hint = ""
-                if signal.alert_type == "OIL":
-                    _p = snapshot.get("oil")
-                    if _p:
-                        _hint = f" WTI ${float(_p):.0f}"
-                elif signal.alert_type == "VIX":
-                    _p = snapshot.get("vix")
-                    if _p:
-                        _hint = f" VIX {float(_p):.1f}"
-                elif "SPY" in signal.alert_type:
-                    _p = snapshot.get("sp500")
-                    if _p:
-                        _hint = f" SPY {float(_p):+.1f}%"
-                elif signal.alert_type == "CRISIS":
-                    _hint = " 복합위기"
-
-                meme_tweet = (
-                    f"{_em} {signal.alert_type} {signal.level}{_hint}\n"
-                    f"⚠️ 투자 참고 정보, 투자 권유 아님"
-                )
-                pub_r = publish_tweet_with_image(meme_tweet, meme_path)
-                if pub_r.get("success"):
-                    logger.info(f"[run_alert] B-21A X 이미지 발행 완료: {signal.alert_type}")
-                else:
-                    logger.warning(
-                        f"[run_alert] B-21A X 이미지 발행 실패: {signal.alert_type}/{signal.level}"
-                    )
-            except Exception as e:
-                logger.warning(f"[run_alert] B-21A X 이미지 발행 예외 (영향 없음): {e}")
-        elif meme_path and not _x_image_ok:
-            logger.info(
-                f"[run_alert] B-21A X 이미지 발행 스킵 (정합성 가드): "
-                f"{signal.alert_type}/{signal.level} | "
-                f"x_eligible={_x_elig} tweet_id={tweet_id}"
-            )
-
-        results.append({
-            "type":       signal.alert_type,
-            "level":      signal.level,
-            "tweet_id":   tweet_id,
-            "x_eligible": _x_elig,
-            "success":    tweet_id not in ("SKIP_X", "FAIL"),
-        })
-
-    # x_eligible Alert 쿨다운 이력 저장 (루프 후 1회)
-    _save_x_alert_history(x_history)
-
-    # ── P2-D (BUGFIX-2026-05-14): 운영 메트릭 요약 로그 (DB 스키마 미변경) ──
-    # 목적: GitHub Actions 로그에서 grep "METRICS"로 일별 집계 가능
-    # 별도 메트릭 테이블 신설 없이 기존 daily_alerts 테이블 + 로그 grep 조합
-    # 활용: false positive 비율 추적, alert_type별 임계값 튜닝 근거 확보
-    _metrics = {
-        "by_type":  {},
-        "by_level": {"L1": 0, "L2": 0, "L3": 0},
-        "x_sent":   0,
-        "tg_only":  0,
-    }
-    for _r in results:
-        _t = _r.get("type", "?")
-        _l = _r.get("level", "?")
-        _metrics["by_type"][_t] = _metrics["by_type"].get(_t, 0) + 1
-        if _l in _metrics["by_level"]:
-            _metrics["by_level"][_l] += 1
-        if _r.get("success"):
-            _metrics["x_sent"] += 1
-        else:
-            _metrics["tg_only"] += 1
-    logger.info(
-        f"[run_alert] METRICS detected={len(alerts)} "
-        f"sent_x={_metrics['x_sent']} tg_only={_metrics['tg_only']} "
-        f"by_level={_metrics['by_level']} by_type={_metrics['by_type']}"
-    )
-
-    # ── D안: Alert 사후 리포트 (독립 실행 — 실패해도 영향 없음) ──
-    try:
-        from engines.alert_followup import run_followup
-        _fu = run_followup(snapshot)
-        logger.info(f"[run_alert] D안 사후 리포트: {_fu}")
-    except Exception as e:
-        logger.warning(f"[run_alert] D안 사후 리포트 실패 (영향 없음): {e}")
-
-    # ── 완료 ────────────────────────────────────────────────────
-    summary = {
-        "alerts_detected": len(alerts),
-        "alerts_sent":     sent_count,
-        "results":         results,
-        "metrics":         _metrics,   # P2-D: summary에도 포함 (호출자가 활용 가능)
-        "timestamp":       datetime.now(UTC).isoformat(),
-    }
-
-    logger.info("=" * 50)
-    logger.info(f"[run_alert] 완료 — 감지:{len(alerts)}개 발송:{sent_count}개")
-    logger.info("=" * 50)
-
-    return summary
-
-
-def run() -> dict:
-    """Run the repository's canonical Macro-News alert pipeline.
-
-    The previous entrypoint referenced legacy modules that are not part of this
-    repository (``collectors.news_rss``, ``collectors.yahoo_finance`` and
-    ``engines.alert_engine``).  Keeping the old implementation in
-    :func:`_run_legacy` preserves its helper code for migration, while the
-    executable entrypoint now uses the collectors and detection stack that is
-    present, tested and maintained in this repository.
-    """
-    logger.info("=" * 50)
-    logger.info(f"[run_alert] canonical Macro-News 시작 | DRY_RUN={DRY_RUN}")
-    logger.info("=" * 50)
-
-    if DRY_RUN:
-        logger.info("[run_alert] DRY_RUN — 시간 윈도우 체크 생략, 강제 실행")
-    else:
-        should_run, reason = _is_alert_window()
-        if not should_run:
-            logger.info(f"[run_alert] 시간 윈도우 아님 — 스킵: {reason}")
-            return {"alerts_detected": 0, "alerts_sent": 0, "reason": "outside_window"}
+        window = decide_from_env()  # margin 0: gate 이후 재판정
+        if not window.inside:
+            outcome = _window_skip_outcome(window)
+            logger.info(f"[run_alert] 시간 윈도우 아님({outcome}) — 스킵: {window.reason}")
+            rec.finish(outcome, window_reason=window.reason)
+            if os.getenv("GITHUB_EVENT_NAME") == "schedule" and outcome == "outside_window":
+                print(f"::warning::gate 통과 후 창 이탈 — {window.reason}")
+            return {"alerts_detected": 0, "alerts_sent": 0, "reason": outcome}
+        logger.info(f"[run_alert] 창 진입: {window.reason}")
+        rec.add_detail(window_reason=window.reason)
 
     from collectors.news_collector import NewsCollector
     from collectors.youtube_collector import YouTubeCollector
-    from db.alert_store import AlertStore
     from detection.alert_engine import AlertEngine
+    from detection.duplicate_guard import DuplicateGuard
     from detection.macro_news_layer import MacroNewsLayer
     from publishers.alert_formatter import AlertFormatter
     from publishers.telegram_publisher import TelegramPublisher
@@ -1070,7 +343,6 @@ def run() -> dict:
         def save_dq_state(_state):
             return None
 
-    alert_store = None if DRY_RUN else AlertStore()
     layer = MacroNewsLayer(
         news_collector=NewsCollector(),
         youtube_collector=YouTubeCollector(),
@@ -1090,6 +362,14 @@ def run() -> dict:
         "youtube_comparisons": len(result.youtube_comparisons),
         "timestamp": datetime.now(UTC).isoformat(),
     }
+    rec.set(
+        level=result.level,
+        score=result.score,
+        alert_id=signal.alert_id,
+        news_events=len(result.news_events),
+        youtube_events=len(result.youtube_events),
+    )
+
     if result.level == "NONE" or not signal.should_publish:
         logger.info(
             "[run_alert] Alert 발행 없음 — level=%s news=%d youtube=%d summaries=%d comparisons=%d",
@@ -1099,71 +379,51 @@ def run() -> dict:
             len(result.youtube_summaries),
             len(result.youtube_comparisons),
         )
+        if result.level == "NONE":
+            rec.finish("level_none")
+        elif signal.suppressed_reason:
+            rec.finish(signal.suppressed_reason)
+        else:
+            rec.finish("level_none", note="no_target_channel")
         return summary
 
-    formatter = AlertFormatter()
-    telegram = TelegramPublisher(dry_run=DRY_RUN)
-    top_news = signal.top_news_titles
-    top_youtube = signal.top_youtube_titles
+    proceed, claim_key = _claim_window(alert_store, window, signal, rec, summary)
+    if not proceed:
+        return summary
+
     published = {"x": False, "tg_free": False, "tg_paid": False, "tg_internal": False}
     errors: dict[str, str] = {}
-
-    tg_text = formatter.format_tg(
-        signal.level, signal.score, signal.reasoning, top_news, top_youtube,
-        signal.health_score, signal.alert_id,
-    )
-    internal_text = (
-        formatter.format_degraded(signal.dq_state_dict, signal.alert_id)
-        if signal.level == "SYSTEM_DEGRADED"
-        else formatter.format_internal(
-            signal.level, signal.score, signal.reasoning, top_news, top_youtube,
-            signal.health_score, signal.alert_id,
+    try:
+        dup_guard = DuplicateGuard(alert_store=alert_store) if alert_store is not None else None
+        dup_decision = _evaluate_dup_pre(dup_guard, alert_store, signal, result, rec)
+        x_blocked = _publish_channels(
+            signal, result, AlertFormatter(), TelegramPublisher(dry_run=DRY_RUN), XPublisher,
+            dup_guard, dup_decision, rec, published, errors,
         )
-    )
-
-    def _publish(channel: str, operation) -> None:
-        try:
-            operation()
-            published[channel] = True
-        except Exception as exc:
-            errors[channel] = f"{type(exc).__name__}: {exc}"[:500]
-            logger.error(f"[run_alert] {channel} 발행 실패 (다른 채널 계속): {errors[channel]}")
-
-    if signal.publish_tg_free:
-        _publish("tg_free", lambda: telegram.publish_free(tg_text))
-    if signal.publish_tg_paid:
-        _publish("tg_paid", lambda: telegram.publish_paid(tg_text))
-    if signal.publish_tg_internal:
-        _publish("tg_internal", lambda: telegram.publish_internal(internal_text))
-    if signal.publish_x:
-        x_text = formatter.format_x(
-            signal.level, signal.score, signal.reasoning, top_news,
-            force_template=DRY_RUN,
-        )
-        _publish("x", lambda: XPublisher(dry_run=DRY_RUN).publish(x_text))
+    finally:
+        # 성공 채널 0 (전 채널 실패 또는 발행 전/중 예외) → claim 해제, 2차 슬롯 재시도 허용
+        if claim_key is not None and alert_store is not None and not any(published.values()):
+            alert_store.release_claim(claim_key, os.getenv("GITHUB_RUN_ID", "local"))
 
     sent_count = sum(published.values())
+    targets = _target_channels(signal, x_blocked=x_blocked)
+    ok = [ch for ch in targets if published[ch]]
+    outcome = _decide_outcome(targets, ok, x_blocked)
     summary["alerts_sent"] = sent_count
     summary["published"] = published
     summary["errors"] = errors
+    summary["targets"] = targets
+    rec.set(targets=targets, published_channels=ok, errors=errors)
+    rec.finish(outcome)
 
     if alert_store is not None:
-        alert_store.update_publish_result(
-            signal.alert_id,
-            x_published=published["x"],
-            tg_free_published=published["tg_free"],
-            tg_paid_published=published["tg_paid"],
-            tg_internal_published=published["tg_internal"],
-            x_error=errors.get("x"),
-            tg_free_error=errors.get("tg_free"),
-            tg_paid_error=errors.get("tg_paid"),
-            tg_internal_error=errors.get("tg_internal"),
-        )
+        _record_publish_result(alert_store, signal, published, errors, ok)
         if sent_count:
             alert_store.set_cooldown(signal.level, signal.alert_id)
 
     logger.info(
-        "[run_alert] 완료 — level=%s detected=%d sent=%d summaries=%d comparisons=%d",
+        "[run_alert] 완료 — outcome=%s level=%s detected=%d sent=%d summaries=%d comparisons=%d",
+        outcome,
         result.level,
         summary["alerts_detected"],
         sent_count,
@@ -1173,13 +433,107 @@ def run() -> dict:
     return summary
 
 
-def main():
+def run() -> dict:
+    """Canonical Macro-News pipeline (collectors/detection stack).
+
+    RunRecorder 로 ia_alert_run 1행을 기록하고 summary 에 outcome / exit_code 를 담아 반환한다.
+    파이프라인 예외는 RunRecorder 가 error 로 기록한 뒤 재전파한다 (main 이 exit 1).
+    """
+    logger.info("=" * 50)
+    logger.info(f"[run_alert] canonical Macro-News 시작 | DRY_RUN={DRY_RUN}")
+    logger.info("=" * 50)
+
+    alert_store = None
+    if not DRY_RUN:
+        from db.alert_store import AlertStore
+        alert_store = AlertStore()
+
+    with RunRecorder(alert_store=alert_store, dry_run=DRY_RUN) as rec:
+        summary = _run_pipeline(alert_store, rec)
+    summary["outcome"] = rec.row["outcome"]
+    summary["exit_code"] = rec.exit_code
+    return summary
+
+
+# ─────────────────────────────────────────────────────────────
+# GitHub Actions 출력 / 실패 알림
+# ─────────────────────────────────────────────────────────────
+
+def _write_step_summary(summary: dict) -> None:
+    path = os.getenv("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    pub = summary.get("published") or {}
+    rows = [
+        ("outcome", summary.get("outcome")),
+        ("level", summary.get("level", "-")),
+        ("score", summary.get("score", "-")),
+        ("alerts_sent", summary.get("alerts_sent", 0)),
+        ("channels", ", ".join(k for k, v in pub.items() if v) or "-"),
+        ("errors", ", ".join((summary.get("errors") or {}).keys()) or "-"),
+        ("dry_run", DRY_RUN),
+    ]
+    md = "### run_alert 결과\n\n| 항목 | 값 |\n|---|---|\n"
+    md += "".join(f"| {k} | {v} |\n" for k, v in rows)
     try:
-        run()
-        sys.exit(0)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(md)
+    except OSError as e:
+        logger.warning(f"[run_alert] STEP_SUMMARY 쓰기 실패: {e}")
+
+
+def _write_github_output(summary: dict) -> None:
+    path = os.getenv("GITHUB_OUTPUT")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"result={summary.get('outcome', 'error')}\n")
+            f.write(f"alerts_sent={summary.get('alerts_sent', 0)}\n")
+    except OSError as e:
+        logger.warning(f"[run_alert] GITHUB_OUTPUT 쓰기 실패: {e}")
+
+
+def _notify_internal_failure(summary: dict) -> None:
+    """partial_fail / all_fail / error 내부 TG 알림. 알림 실패는 삼킨다 (종료코드 불변)."""
+    try:
+        from publishers.telegram_publisher import TelegramPublisher
+        run_url = (
+            f"{os.getenv('GITHUB_SERVER_URL', '')}/{os.getenv('GITHUB_REPOSITORY', '')}"
+            f"/actions/runs/{os.getenv('GITHUB_RUN_ID', '')}"
+        )
+        errs = summary.get("errors") or {}
+        text = (
+            f"<b>[run_alert] {html.escape(str(summary.get('outcome')))}</b>\n"
+            f"level={html.escape(str(summary.get('level', '-')))} "
+            f"sent={summary.get('alerts_sent', 0)}\n"
+            + "".join(
+                f"- {html.escape(str(k))}: {html.escape(_redact_secrets(str(v))[:200])}\n"
+                for k, v in errs.items()
+            )
+            + html.escape(run_url)
+        )
+        TelegramPublisher(dry_run=DRY_RUN).publish_internal(text[:3500])
+    except Exception as e:
+        logger.warning(f"[run_alert] 내부 실패 알림 발송 실패(무시): {type(e).__name__}: {e}")
+
+
+def main() -> None:
+    logger.info(f"[run_alert] v{VERSION} 시작")
+    try:
+        summary = run()
     except Exception as e:
         logger.critical(f"[run_alert] 예외: {e}", exc_info=True)
-        sys.exit(1)
+        summary = {"outcome": "error", "exit_code": 1,
+                   "errors": {"run": _redact_secrets(str(e))[:300]}}
+    _write_step_summary(summary)
+    _write_github_output(summary)
+    outcome = summary.get("outcome")
+    if outcome == "partial_fail":
+        print(f"::warning title=alert partial_fail::errors={list(summary.get('errors') or {})}")
+    if outcome in NOTIFY_OUTCOMES:
+        _notify_internal_failure(summary)
+    sys.exit(summary.get("exit_code", 1))
 
 
 if __name__ == "__main__":

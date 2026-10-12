@@ -22,7 +22,7 @@ from core.logger import get_logger
 from db.alert_store import AlertStore
 from detection.sector_flow_layer import SectorRotationResult
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 logger = get_logger(__name__)
 
@@ -198,6 +198,7 @@ class SectorAlertEngine:
                     top_youtube=[],
                     reasoning_json=result.reasoning_json,
                     policy_version=result.policy_version,
+                    source="sector",  # v1.0.1: 007 ia_alert_history.source
                 )
                 signal.audit_persisted = bool(ok)
             except Exception as e:

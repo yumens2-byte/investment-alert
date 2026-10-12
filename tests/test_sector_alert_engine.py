@@ -142,3 +142,17 @@ def test_publish_policy_definition() -> None:
     assert SECTOR_PUBLISH_POLICY["L2"]["tg_internal"] is True
     assert SECTOR_PUBLISH_POLICY["L2"]["tg_free"] is True
     assert SECTOR_PUBLISH_POLICY["NONE"]["tg_internal"] is False
+
+
+def test_save_alert_passes_source_sector(monkeypatch) -> None:
+    """제목: v1.0.1 — save_alert 호출에 source='sector' 전달 (Migration 007)"""
+    monkeypatch.setenv("SECTOR_SHADOW_MODE", "true")
+
+    mock_store = MagicMock()
+    mock_store.is_cooldown_active.return_value = False
+    mock_store.save_alert.return_value = True
+
+    engine = SectorAlertEngine(alert_store=mock_store)
+    engine.process(_make_result(level="L2"))
+
+    assert mock_store.save_alert.call_args.kwargs["source"] == "sector"

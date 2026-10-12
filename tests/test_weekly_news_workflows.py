@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 WORKFLOWS = (
     Path(".github/workflows/weekly_news_draft.yml"),
     Path(".github/workflows/weekly_news_draft_sunday.yml"),

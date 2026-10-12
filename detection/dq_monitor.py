@@ -110,7 +110,7 @@ class DataQualityMonitor:
     }
 
     # B-fix2: NewsValidator.window_hours(24h)와 일치
-    # 1시간은 cron */45 + RSS 갱신 주기보다 짧아 평화 시간대 거짓 DEGRADED 발생.
+    # 1시간은 운영 cron 주기 + RSS 갱신 주기보다 짧아 평화 시간대 거짓 DEGRADED 발생.
     # env DQ_FRESH_WINDOW_SECONDS로 운영 시 동적 조정 가능.
     DEFAULT_FRESH_WINDOW_SECONDS: int = 24 * 3600
 

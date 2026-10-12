@@ -11,16 +11,20 @@
   - AlertStore.update_publish_result(...): 발행 결과 업데이트
   - AlertStore.is_cooldown_active(level): 쿨다운 활성 여부 확인
   - AlertStore.set_cooldown(level, minutes): 쿨다운 설정
+  - AlertStore.claim_window / release_claim: 창당 발행 1회 claim (v1.2.0)
+  - AlertStore.save_run(row): ia_alert_run 1실행 1행 기록 (v1.2.0)
+  - AlertStore.probe_duplicate_guard_tables(): DuplicateGuard 테이블 접근 프로브 (v1.2.0)
 """
 
 from __future__ import annotations
 
 import os
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from core.logger import get_logger
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 logger = get_logger(__name__)
 
@@ -48,6 +52,13 @@ TABLE_TOPIC_COOLDOWN = "ia_topic_cooldown"
 TABLE_TOPIC_STATE = "ia_topic_state"
 TABLE_X_PUBLISH_FINGERPRINT = "ia_x_publish_fingerprint"
 TABLE_DUPLICATE_DECISION_LOG = "ia_duplicate_decision_log"
+
+# 제목: v1.2.0 실행 가시화 / 창 claim (Migration 005)
+TABLE_ALERT_WINDOW_CLAIM = "ia_alert_window_claim"
+TABLE_ALERT_RUN = "ia_alert_run"
+
+# 제목: claim_window 반환 타입
+ClaimResult = Literal["claimed", "already_claimed", "error"]
 
 
 class AlertStore:
@@ -115,6 +126,7 @@ class AlertStore:
         reasoning_json: dict | None = None,
         policy_version: str | None = None,
         published_channels: list[str] | None = None,
+        source: str | None = None,
     ) -> bool:
         """
         제목: Alert 감사로그 저장
@@ -131,6 +143,7 @@ class AlertStore:
             reasoning_json: FR-05 표준화 JSON (None이면 빈 dict로 저장)
             policy_version: 적용된 정책 버전 (semver)
             published_channels: 발행 성공 채널 리스트 (e.g. ["x","tg_free"])
+            source: 'macro'|'sector' (v1.2.0, Migration 007). None이면 미전송 → DB DEFAULT
 
         Returns:
             bool: 성공 시 True, 실패 시 False
@@ -154,6 +167,8 @@ class AlertStore:
                 data["policy_version"] = policy_version
             if published_channels is not None:
                 data["published_channels"] = published_channels
+            if source is not None:
+                data["source"] = source
 
             client.table(TABLE_ALERT_HISTORY).upsert(  # type: ignore[union-attr]
                 data, on_conflict="alert_id"
@@ -175,6 +190,7 @@ class AlertStore:
         tg_paid_error: str | None = None,
         tg_internal_published: bool = False,
         tg_internal_error: str | None = None,
+        published_channels: list[str] | None = None,
     ) -> bool:
         """
         제목: 발행 결과 업데이트
@@ -191,6 +207,7 @@ class AlertStore:
             tg_paid_error: TG Paid 오류 메시지
             tg_internal_published: TG Internal 발행 성공 여부 (FR-04)
             tg_internal_error: TG Internal 오류 메시지
+            published_channels: 발행 성공 채널 리스트 (v1.2.0, None이면 미전송)
 
         Returns:
             bool: 성공 시 True
@@ -213,6 +230,8 @@ class AlertStore:
                 updates["tg_paid_error"] = tg_paid_error[:500]
             if tg_internal_error:
                 updates["tg_internal_error"] = tg_internal_error[:500]
+            if published_channels is not None:
+                updates["published_channels"] = published_channels
 
             client.table(TABLE_ALERT_HISTORY).update(updates).eq(  # type: ignore[union-attr]
                 "alert_id", alert_id
@@ -617,3 +636,105 @@ class AlertStore:
             logger.warning(f"[AlertStore] duplicate decision 저장 실패: {e}")
             return False
 
+    # ────────────────────────────────────────────────────
+    # v1.2.0: 창 claim / 실행 기록 / DuplicateGuard 프로브
+    # ────────────────────────────────────────────────────
+    def claim_window(self, claim_key: str, alert_id: str, run_id: str) -> ClaimResult:
+        """
+        제목: 창(window) 발행권 선점 — INSERT ... ON CONFLICT (claim_key) DO NOTHING
+        내용: 반환 행이 있으면 선점 성공, 빈 배열이면 다른 run 이 이미 선점.
+
+        Args:
+            claim_key: '{et_date}:{target}' 예 '2026-10-13:09:30'
+            alert_id: 발행 대상 Alert ID
+            run_id: GITHUB_RUN_ID (로컬 실행 시 'local')
+
+        Returns:
+            "claimed" | "already_claimed" | "error"
+        """
+        try:
+            client = self._get_client()
+            result = (
+                client.table(TABLE_ALERT_WINDOW_CLAIM)  # type: ignore[union-attr]
+                .upsert(
+                    {
+                        "claim_key": claim_key,
+                        "alert_id": alert_id,
+                        "gh_run_id": run_id,
+                        "claimed_at": datetime.now(UTC).isoformat(),
+                    },
+                    on_conflict="claim_key",
+                    ignore_duplicates=True,
+                )
+                .execute()
+            )
+            if result.data:
+                logger.info(f"[AlertStore] window claim 성공: {claim_key} run={run_id}")
+                return "claimed"
+            logger.info(f"[AlertStore] window claim 선점됨 (skip): {claim_key}")
+            return "already_claimed"
+        except Exception as e:
+            logger.error(f"[AlertStore] window claim 실패: {type(e).__name__}: {e}")
+            return "error"
+
+    def release_claim(self, claim_key: str, run_id: str) -> bool:
+        """
+        제목: 창 발행권 해제 (전 채널 발행 실패 시 2차 슬롯 재시도 허용)
+        내용: 자기 run_id 가 잡은 claim 만 삭제한다.
+
+        Returns:
+            bool: 성공 시 True
+        """
+        try:
+            client = self._get_client()
+            (
+                client.table(TABLE_ALERT_WINDOW_CLAIM)  # type: ignore[union-attr]
+                .delete()
+                .eq("claim_key", claim_key)
+                .eq("gh_run_id", run_id)
+                .execute()
+            )
+            logger.info(f"[AlertStore] window claim 해제: {claim_key} run={run_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[AlertStore] window claim 해제 실패: {type(e).__name__}: {e}")
+            return False
+
+    def save_run(self, row: dict) -> bool:
+        """
+        제목: ia_alert_run 1실행 1행 INSERT (RunRecorder 전용)
+
+        Args:
+            row: ia_alert_run 컬럼 dict
+
+        Returns:
+            bool: 성공 시 True, 실패 시 False
+        """
+        try:
+            client = self._get_client()
+            client.table(TABLE_ALERT_RUN).insert(row).execute()  # type: ignore[union-attr]
+            logger.info(f"[AlertStore] alert_run 저장 완료: outcome={row.get('outcome')}")
+            return True
+        except Exception as e:
+            logger.error(f"[AlertStore] alert_run 저장 실패: {type(e).__name__}: {e}")
+            return False
+
+    def probe_duplicate_guard_tables(self) -> str | None:
+        """
+        제목: DuplicateGuard 테이블 접근 가능 여부 프로브
+        내용: get_topic_state 등은 예외를 삼켜 '조용한 통과'가 되므로 1회 SELECT 로 가시화.
+
+        Returns:
+            str | None: 정상 None, 실패 시 사유 문자열(최대 300자)
+        """
+        try:
+            client = self._get_client()
+            for table in (
+                TABLE_TOPIC_STATE,
+                TABLE_X_PUBLISH_FINGERPRINT,
+                TABLE_DUPLICATE_DECISION_LOG,
+            ):
+                client.table(table).select("*").limit(1).execute()  # type: ignore[union-attr]
+            return None
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"[:300]

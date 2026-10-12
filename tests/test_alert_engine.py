@@ -191,3 +191,39 @@ def test_publish_policy_completeness() -> None:
         assert level in PUBLISH_POLICY
         for ch in ("x", "tg_free", "tg_paid"):
             assert ch in PUBLISH_POLICY[level]
+
+
+# ── v1.1.0: suppressed_reason ─────────────────────────
+@pytest.mark.unit
+def test_suppressed_reason_none_when_publishable(engine_no_store: AlertEngine) -> None:
+    signal = engine_no_store.process(make_result(level="L2"))
+    assert signal.suppressed_reason is None
+
+
+@pytest.mark.unit
+def test_suppressed_reason_cooldown_level(
+    mock_store: MagicMock, engine_with_store: AlertEngine
+) -> None:
+    """레벨 쿨다운 → suppressed_reason='cooldown_level'"""
+    mock_store.is_cooldown_active.return_value = True
+    signal = engine_with_store.process(make_result(level="L2"))
+    assert signal.suppressed_reason == "cooldown_level"
+    assert signal.should_publish is False
+
+
+@pytest.mark.unit
+def test_suppressed_reason_cooldown_topic_disables_tg_internal(
+    mock_store: MagicMock, engine_with_store: AlertEngine
+) -> None:
+    """토픽 쿨다운 → suppressed_reason='cooldown_topic' + publish_tg_internal False"""
+    mock_store.is_cooldown_active.return_value = False
+    mock_store.is_topic_cooldown_active.return_value = True
+    result = make_result(level="L1", score=8.0)
+    for e in result.news_events:
+        e.matched_keywords = ["fed", "rate"]
+    signal = engine_with_store.process(result)
+    assert signal.suppressed_reason == "cooldown_topic"
+    assert signal.is_cooldown_active is True
+    assert signal.publish_tg_internal is False
+    assert signal.publish_x is False
+    assert signal.should_publish is False

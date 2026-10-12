@@ -10,12 +10,16 @@
 from __future__ import annotations
 
 import os
+import socket
 from datetime import UTC, datetime
 
 import feedparser
 import requests
 
-VERSION = "1.0.0"
+# feedparser는 timeout 인자가 없음 → socket 레벨 강제 (collectors/news_collector.py L32-34 동일 패턴)
+socket.setdefaulttimeout(15)
+
+VERSION = "1.1.0"  # P4: socket timeout, config import 보호, Secret 출력 제거, check 격리
 
 # ────────────────────────────────────────────────────────
 # 출력 헬퍼
@@ -44,10 +48,13 @@ def _row(label: str, value: object) -> None:
 # ────────────────────────────────────────────────────────
 # 1. 뉴스 RSS 소스별 점검
 # ────────────────────────────────────────────────────────
-# 변경 후 (settings.py 참조)
-def check_news_rss():
-    _h("2. 뉴스 RSS 소스 점검")
-    from config.settings import NEWS_SOURCE_REGISTRY
+def check_news_rss() -> None:
+    _h("📰 뉴스 RSS 소스 점검")
+    try:
+        from config.settings import NEWS_SOURCE_REGISTRY
+    except Exception as e:  # dotenv 미설치/설정 오류 등 — 진단은 계속
+        _err(f"config.settings import 실패: {type(e).__name__}: {e}")
+        return
     sources = {}
     for tier, tier_sources in NEWS_SOURCE_REGISTRY.items():
         for name, cfg in tier_sources.items():
@@ -95,8 +102,7 @@ def check_youtube_rss() -> None:
 
     raw = os.getenv("YOUTUBE_CHANNELS", "")
     raw = raw.strip()
- 
-      
+
     if raw.startswith("YOUTUBE_CHANNELS="):
         raw = raw[len("YOUTUBE_CHANNELS="):].strip()
         print(f"  등록 채널: {raw}")
@@ -104,10 +110,6 @@ def check_youtube_rss() -> None:
         _err("YOUTUBE_CHANNELS 환경변수 미설정")
         return
 
-
-
-      
-      
     channels = []
     for pair in raw.split(","):
         pair = pair.strip()
@@ -152,8 +154,8 @@ def check_supabase() -> None:
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
     key = os.getenv("SUPABASE_KEY", "")
 
-    _row("SUPABASE_URL", url if url else "❌ 미설정")
-    _row("SUPABASE_KEY", f"{'설정됨 (' + key[:8] + '...)' if key else '❌ 미설정'}")
+    _row("SUPABASE_URL", "설정됨" if url else "❌ 미설정")
+    _row("SUPABASE_KEY", "설정됨" if key else "❌ 미설정")
 
     if not url or not key:
         _err("환경변수 미설정 — 점검 불가")
@@ -227,8 +229,7 @@ def check_env_vars() -> None:
     for key, desc in required.items():
         val = os.getenv(key, "")
         if val:
-            masked = val[:6] + "..." if len(val) > 6 else val
-            _ok(f"{key:<35} {masked}  ({desc})")
+            _ok(f"{key:<35} 설정됨  ({desc})")
         else:
             _err(f"{key:<35} 미설정  ({desc})")
             all_ok = False
@@ -238,8 +239,7 @@ def check_env_vars() -> None:
     for key, desc in optional.items():
         val = os.getenv(key, "")
         if val:
-            masked = val[:6] + "..." if len(val) > 6 else val
-            _ok(f"{key:<35} {masked}  ({desc})")
+            _ok(f"{key:<35} 설정됨  ({desc})")
         else:
             _warn(f"{key:<35} 미설정  ({desc})")
 
@@ -254,15 +254,17 @@ def check_env_vars() -> None:
 # 메인
 # ────────────────────────────────────────────────────────
 def main() -> None:
+    print(f"[run_diagnostics] v{VERSION} 시작")
     print(_DIV_BOLD)
     print(f"  investment-alert 진단 스크립트 v{VERSION}")
     print(f"  실행 시각: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(_DIV_BOLD)
 
-    check_env_vars()
-    check_news_rss()
-    check_youtube_rss()
-    check_supabase()
+    for check in (check_env_vars, check_news_rss, check_youtube_rss, check_supabase):
+        try:
+            check()
+        except Exception as e:  # 진단 실패가 다음 점검을 막지 않도록
+            _err(f"{check.__name__} 예외: {type(e).__name__}: {e}")
 
     print(f"\n{_DIV_BOLD}")
     print("  진단 완료")

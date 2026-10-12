@@ -116,10 +116,10 @@ HOLIDAY_LOW_SIGNAL_RAW_YT_MAX: int = 1
 # ────────────────────────────────────────────────────────
 # B1 패치 (v1.1.0): health_score recency 윈도우 동적화
 # ────────────────────────────────────────────────────────
-# 내용: 기존 1h 하드코딩은 cron */45 + "전일 누적 데이터 기반 운영"과 부정합 →
+# 내용: 기존 1h 하드코딩은 운영 cron 주기 + "전일 누적 데이터 기반 운영"과 부정합 →
 #       recency 0.5 이하 빈발 → health<0.90 → L1 자동 강등 빈발.
 #       DQ_FRESH_WINDOW_SECONDS env로 dq_monitor와 윈도우 공유 (메모리 #27).
-#       기본값은 cron 주기(*/45 = 2700s)×2 = 5400초 (안전 마진).
+#       기본값 5400초 = 운영 cron 주기 기반 안전 마진 (D3 이후 재검토).
 _HEALTH_RECENCY_SECONDS_DEFAULT: int = 5400
 
 
@@ -522,8 +522,8 @@ class MacroNewsLayer:
 
         # ── 요소 2: 최신성 (0.25) ──────────────────────────────
         # 내용: 환경변수 기반 동적 윈도우 (B1 패치 v1.1.0).
-        # 운영 cron */45 + 전일 데이터 기반 시스템 정합성 확보.
-        # 기본 5400초(=cron×2). DQ_FRESH_WINDOW_SECONDS env로 동적 조정.
+        # 운영 cron 주기 + 전일 데이터 기반 시스템 정합성 확보.
+        # 기본 5400초 = 운영 cron 주기 기반 안전 마진 (D3 이후 재검토). DQ_FRESH_WINDOW_SECONDS env로 동적 조정.
         now = datetime.now(UTC)
         recency_window_sec = _get_recency_window_seconds()
         cutoff = now - timedelta(seconds=recency_window_sec)

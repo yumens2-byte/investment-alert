@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from core.logger import get_logger
 from detection.macro_news_layer import AlertLevel, MacroNewsResult
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = get_logger(__name__)
 
@@ -69,6 +69,9 @@ class AlertSignal:
 
     # 쿨다운 활성이면 발행 스킵
     is_cooldown_active: bool = False
+
+    # v1.1.0: 억제 사유 노출 (None | "cooldown_level" | "cooldown_topic")
+    suppressed_reason: str | None = None
 
     # FR-05 표준화 reasoning + 정책 추적
     reasoning_json: dict = field(default_factory=dict)
@@ -184,6 +187,7 @@ class AlertEngine:
             publish_tg_paid=policy["tg_paid"] and not is_cooldown,
             publish_tg_internal=policy.get("tg_internal", False) and not is_cooldown,
             is_cooldown_active=is_cooldown,
+            suppressed_reason="cooldown_level" if is_cooldown else None,
             reasoning_json=reasoning_json,
             policy_version=policy_version,
             dq_state_dict=dq_state_dict,
@@ -244,7 +248,9 @@ class AlertEngine:
                         signal.publish_x = False
                         signal.publish_tg_free = False
                         signal.publish_tg_paid = False
+                        signal.publish_tg_internal = False  # v1.1.0: 기록 정합성
                         signal.is_cooldown_active = True
+                        signal.suppressed_reason = "cooldown_topic"
                     else:
                         # 신규/재감지 등록
                         keywords = ", ".join(

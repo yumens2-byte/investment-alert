@@ -622,3 +622,84 @@ def test_generate_alert_image_success(tmp_path: Path) -> None:
     assert result is not None
     assert result.exists()
     assert result.stat().st_size > 30 * 1024
+
+
+# ────────────────────────────────────────────────────────
+# v1.1.2 신규: LLM 호출 timeout 생성자 kwargs 검증 (3개)
+# ────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_claude_l1_client_has_timeout_and_max_retries() -> None:
+    """Anthropic 생성자에 timeout(초)·max_retries 전달"""
+    fake_anthropic_module = MagicMock()
+    fake_block = MagicMock()
+    fake_block.type = "text"
+    fake_block.text = "본문"
+    fake_anthropic_module.Anthropic.return_value.messages.create.return_value = MagicMock(
+        content=[fake_block]
+    )
+
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "fake"}, clear=False):
+        with patch.dict(sys.modules, {"anthropic": fake_anthropic_module}):
+            result = alert_formatter_kind._call_claude_l1("프롬프트")
+
+    assert result == "본문"
+    kwargs = fake_anthropic_module.Anthropic.call_args.kwargs
+    assert kwargs["api_key"] == "fake"
+    assert kwargs["timeout"] == alert_formatter_kind._LLM_TEXT_TIMEOUT_SEC
+    assert kwargs["max_retries"] == alert_formatter_kind._LLM_MAX_RETRIES == 1
+
+
+@pytest.mark.unit
+def test_gemini_text_clients_have_http_timeout_ms(tmp_path: Path) -> None:
+    """번역·L2/L3 genai.Client 생성자에 http_options.timeout(ms) 전달"""
+    fake_genai_module = MagicMock()
+    fake_genai_module.Client.return_value.models.generate_content.return_value = MagicMock(
+        text="연준이 금리를 올릴 것 같아요"
+    )
+    expected_ms = int(alert_formatter_kind._LLM_TEXT_TIMEOUT_SEC * 1000)
+
+    with patch.object(alert_formatter_kind, "TRANSLATE_CACHE_DIR", tmp_path):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "fake"}, clear=False):
+            with patch.dict(sys.modules, {
+                "google": MagicMock(genai=fake_genai_module),
+                "google.genai": fake_genai_module,
+            }):
+                translated = translate_news_to_kr(["Fed Timeout Kwargs Test"])
+                l2 = alert_formatter_kind._call_gemini_l2_l3("프롬프트")
+
+    assert translated == ["연준이 금리를 올릴 것 같아요"]
+    assert l2 == "연준이 금리를 올릴 것 같아요"
+    calls = fake_genai_module.Client.call_args_list
+    assert len(calls) == 2  # 번역 1건 + L2/L3 1건
+    for call in calls:
+        assert call.kwargs["api_key"] == "fake"
+        assert call.kwargs["http_options"] == {"timeout": expected_ms}
+    assert expected_ms == 20_000  # 기본값 20s → 20000ms (genai 단위 ms)
+
+
+@pytest.mark.unit
+def test_gemini_image_client_has_http_timeout_ms(tmp_path: Path) -> None:
+    """이미지 genai.Client 생성자에 이미지용 timeout(ms) 전달"""
+    fake_genai = MagicMock()
+    fake_genai.Client.return_value.models.generate_content.return_value = MagicMock(
+        candidates=[]
+    )
+    fake_module = MagicMock()
+    fake_module.genai = fake_genai
+
+    with patch.object(alert_formatter_kind, "IMAGE_OUTPUT_DIR", tmp_path):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "fake"}, clear=False):
+            with patch.dict(sys.modules, {
+                "google": fake_module,
+                "google.genai": fake_genai,
+                "google.genai.types": MagicMock(),
+            }):
+                result = alert_formatter_kind.generate_alert_image_kind("L2", "환율 변동성")
+
+    assert result is None  # inline_data 없음 → None (호출 kwargs 검증이 목적)
+    kwargs = fake_genai.Client.call_args.kwargs
+    assert kwargs["api_key"] == "fake"
+    assert kwargs["http_options"] == {
+        "timeout": int(alert_formatter_kind._LLM_IMAGE_TIMEOUT_SEC * 1000)
+    }
