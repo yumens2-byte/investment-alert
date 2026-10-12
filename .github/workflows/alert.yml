@@ -15,6 +15,11 @@ concurrency:
         description: 'DRY_RUN 모드 (true=모의, false=실발행)'
         type: boolean
         default: false
+      source:
+        description: '실행 주체 (manual=수동 즉시 실행, scheduler=외부 스케줄러: gate·지연 적용)'
+        type: choice
+        options: [manual, scheduler]
+        default: manual
 
 # P1: 창 정의를 gate / run_alert 양쪽에 동일하게 명시 전달 (D2)
 env:
@@ -52,8 +57,8 @@ jobs:
   alert:
     name: Alert Detection & Publish
     needs: gate
-    # workflow_dispatch 는 gate 결과 무시 (gate 실패해도 실행). schedule 은 inside=='true' 일 때만
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.gate.outputs.inside == 'true') }}
+    # 수동 workflow_dispatch(source=manual) 는 gate 결과 무시. schedule 과 외부 스케줄러(source=scheduler) 는 inside=='true' 일 때만
+    if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.source != 'scheduler') || needs.gate.outputs.inside == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10                          # ← 추가 (점검 #3)
 
@@ -62,6 +67,7 @@ jobs:
       TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
       POLICY_VERSION: 'v1.1.0'   # C3 패치 (v1.1.0): 정책 버전 명시 적재
+      TRIGGER_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.source || github.event_name }}   # manual|scheduler|schedule
       DETECTION_POLICY: ${{ vars.DETECTION_POLICY }}   # Q2: v1|v2 (미설정=v1, 비활성 정책은 shadow 기록)
       YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
       YOUTUBE_API_KEY : ${{ secrets.YOUTUBE_API_KEY }}
@@ -97,9 +103,9 @@ jobs:
           cache-dependency-path: requirements*.txt
 
       # P1 (v1.4.0): gate 통과 후 0~120초 random delay (X 안티봇). 창 마감 여유는 gate margin 210s 로 확보
-      # workflow_dispatch는 즉시 실행 (디버깅 편의)
-      - name: Anti-bot random delay (schedule only)
-        if: github.event_name == 'schedule'
+      # 수동 workflow_dispatch 는 즉시 실행 (디버깅 편의). 외부 스케줄러(source=scheduler)는 schedule 과 동일하게 지연
+      - name: Anti-bot random delay (schedule / scheduler)
+        if: github.event_name == 'schedule' || inputs.source == 'scheduler'
         run: |
           DELAY=$((RANDOM % 121))
           echo "⏱️ Random delay: ${DELAY}s ($((DELAY/60))m $((DELAY%60))s)"
