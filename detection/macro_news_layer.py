@@ -18,12 +18,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os as _os
 from dataclasses import dataclass, field
 from typing import Literal
 
 from collectors.base import CollectorEvent
-from collectors.news_collector import NewsCollector
+from collectors.news_collector import NewsCollector, SourceResult
 from collectors.youtube_collector import YouTubeCollector
 from config.market_calendar import get_market_profile, get_threshold_for_profile
 from config.settings import LEVEL_THRESHOLDS, TIER_WEIGHTS
@@ -31,13 +32,23 @@ from core.logger import get_logger
 from db.dq_store import DataQualityStore
 from detection.dq_monitor import DataQualityMonitor, DataQualityState
 from detection.reasoning_builder import ReasoningBuilder
+from detection.scoring_policy import (
+    POLICY_V2_VERSION,
+    DetectionInput,
+    PolicyOutcome,
+    ScoringPolicyV1,
+    ScoringPolicyV2,
+    other_policy,
+    outcome_to_shadow,
+    resolve_detection_policy,
+)
 from detection.youtube_video_analysis import (
     VideoComparison,
     VideoSummary,
     YouTubeVideoAnalysisPipeline,
 )
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"  # Q1: DQ 소스 단위 성공률(뉴스 5 + youtube 1) / failed_sources
 
 logger = get_logger(__name__)
 
@@ -90,6 +101,18 @@ class MacroNewsResult:
     ops_warnings: list[str] = field(default_factory=list)
     youtube_summaries: list[VideoSummary] = field(default_factory=list)
     youtube_comparisons: list[VideoComparison] = field(default_factory=list)
+    # 제목: 소스별 수집 결과 (Q1)
+    # 내용: failed_sources = DQ source_results 중 False 인 키 (운영 경고 입력).
+    #       news_source_results = NewsCollector.SourceResult.to_dict() 목록 (ia_alert_run.detail 기록용)
+    failed_sources: list[str] = field(default_factory=list)
+    news_source_results: list[dict] = field(default_factory=list)
+    # 소스 단위 성공률 (뉴스 소스별 + youtube_collector). v1 DQ(수집기 2키)와 별개 — 운영 경고용
+    source_level_success_rate: float | None = None
+    # 제목: 판정 정책 (Q2)
+    # 내용: active_policy = 이 결과를 만든 정책(v1|v2). shadow = 비활성 정책 판정 요약
+    #       (ia_alert_run.detail.shadow 기록용, 발행 경로 미사용). 평가 실패 시 {"policy","error"}.
+    active_policy: str = "v1"
+    shadow: dict | None = None
 
 
 # ────────────────────────────────────────────────────────
@@ -157,6 +180,7 @@ class MacroNewsLayer:
         reasoning_builder: ReasoningBuilder | None = None,
         dq_store: DataQualityStore | None = None,
         policy_version: str | None = None,
+        detection_policy: str | None = None,
     ) -> None:
         """
         제목: MacroNewsLayer 초기화
@@ -186,8 +210,13 @@ class MacroNewsLayer:
         # 코드가 안 읽고 default를 사용하던 결함을 정정.
         self.policy_version = policy_version or _os.getenv("POLICY_VERSION", "v1.0.0")
 
+        # Q2: 판정 정책 (env DETECTION_POLICY, 기본 v1). 비활성 정책은 shadow 로 평가만.
+        self.detection_policy = resolve_detection_policy(detection_policy)
+        self._policies = {"v1": ScoringPolicyV1(self), "v2": ScoringPolicyV2(self)}
+
         logger.info(
-            f"[MacroNewsLayer] v{VERSION} 초기화 (policy={self.policy_version})"
+            f"[MacroNewsLayer] v{VERSION} 초기화 (policy={self.policy_version}, "
+            f"detection={self.detection_policy}, shadow={other_policy(self.detection_policy)})"
         )
 
     def detect(self) -> MacroNewsResult:
@@ -211,15 +240,20 @@ class MacroNewsLayer:
         cycle_started_at = datetime.now(UTC)
         logger.info("[MacroNewsLayer] 감지 시작")
 
-        # Step 1: 뉴스 수집 (source 성공/실패 추적용 dict 준비)
-        source_results: dict[str, bool] = {}
+        # Step 1: 뉴스 수집 (Q1: 성공/실패는 뉴스 소스 단위로 추적)
         news_events: list[CollectorEvent] = []
+        news_collect_ok = True
         try:
             news_events = self.news_collector.collect()
-            source_results["news_collector"] = True
         except Exception as e:
             logger.error(f"[MacroNewsLayer] 뉴스 수집 실패 (계속 진행): {type(e).__name__}: {e}")
-            source_results["news_collector"] = False
+            news_collect_ok = False
+        # Q2 리뷰 M3: v1 DQ 입력은 기존 수집기 단위 2키(origin/main 동일).
+        #   소스 단위(뉴스 소스별 + youtube_collector)는 운영 경고·기록·v2 DQ 에만 사용.
+        source_results: dict[str, bool] = {"news_collector": news_collect_ok}
+        source_level_results, news_source_results = self._build_news_source_results(
+            news_collect_ok
+        )
 
         # Step 2: YouTube 수집
         youtube_events: list[CollectorEvent] = []
@@ -229,6 +263,7 @@ class MacroNewsLayer:
         except Exception as e:
             logger.error(f"[MacroNewsLayer] YouTube 수집 실패 (계속 진행): {type(e).__name__}: {e}")
             source_results["youtube_collector"] = False
+        source_level_results["youtube_collector"] = source_results["youtube_collector"]
 
         # RSS 수집과 분리된 보수적 metadata/description 요약·비교 단계.
         # 실패해도 기존 뉴스/YouTube 감지 경로를 중단하지 않는다.
@@ -292,6 +327,23 @@ class MacroNewsLayer:
             )
             ops_warnings.append(channel_warning)
             logger.warning(f"[MacroNewsLayer] 운영 경고 — {channel_warning}")
+        # Q1: 일부 소스 장애는 SYSTEM_DEGRADED 와 별개로 운영 경고(내부 TG)로 표면화
+        # 리뷰 m2: collect() 전체 예외(news_collector 키)는 SYSTEM_DEGRADED 경보와 중복 → 제외
+        source_level_rate = (
+            sum(1 for ok in source_level_results.values() if ok) / len(source_level_results)
+        )
+        failed_sources = [
+            name for name, ok in source_level_results.items()
+            if not ok and name != "news_collector"
+        ]
+        if failed_sources:
+            source_warning = (
+                "news_source_failures: "
+                f"count={len(failed_sources)}, sources={','.join(failed_sources)}, "
+                f"success_rate={source_level_rate:.2f}"
+            )
+            ops_warnings.append(source_warning)
+            logger.warning(f"[MacroNewsLayer] 운영 경고 — {source_warning}")
 
         try:
             dq_state = self.dq_monitor.evaluate(
@@ -318,36 +370,51 @@ class MacroNewsLayer:
                 source_results=source_results,
             )
 
-        # Step 3: 점수 산출
-        news_score = self._compute_news_score(news_events)
-        youtube_bonus = self._compute_youtube_bonus(news_events, youtube_events)
-        raw_score = news_score + youtube_bonus
-        final_score = min(raw_score, 10.0)
-
-        # Step 4: 건강도 계산
-        health_score = self._compute_health_score(news_events, youtube_events)
-
+        # Step 3~5 (Q2): 정책 평가 — active 판정 + 비활성 정책 shadow (수집은 위 1회 결과 재사용)
         # Step 4.5: FR-02 장중/장외 프로파일 자동 전환
         dynamic_thresholds = get_threshold_for_profile(market_profile)
         logger.info(
             f"[MacroNewsLayer] 시장 프로파일: {market_profile} "
             f"(L1임계={dynamic_thresholds['l1_score']}, L2임계={dynamic_thresholds['l2_score']})"
         )
-
-        # Step 5: 레벨 판정 (동적 임계값 적용 + DQ 우선 단락)
-        level, reasoning, contributing_factors = self._judge_level(
-            final_score, news_events, health_score, youtube_events,
-            dynamic_thresholds, dq_state=dq_state,
+        # 리뷰 m3: v2 입력 준비 실패는 v1 에 영향 주지 않음 (빈 후보 + 경고)
+        try:
+            news_candidates = self._news_candidates(raw_news_events)
+        except Exception as e:
+            news_candidates = []
+            logger.warning(f"[MacroNewsLayer] v2 후보 준비 실패 (v1 무영향): {type(e).__name__}: {e}")
+        inputs = {
+            "v1": DetectionInput(
+                news_v1=news_events, news_candidates=news_candidates,
+                youtube_events=youtube_events, youtube_raw=raw_youtube_events,
+                market_profile=market_profile, thresholds=dynamic_thresholds, dq_state=dq_state,
+            ),
+        }
+        inputs["v2"] = dataclasses.replace(
+            inputs["v1"], dq_state=self._source_level_dq(dq_state, source_level_results),
         )
+        active, shadow = self._evaluate_policies(inputs, ops_warnings)
+        level, reasoning, contributing_factors = active.level, active.reason, active.factors
+        final_score, news_score, youtube_bonus = active.score, active.news_score, active.youtube_bonus
+        health_score = active.health_score
 
+        health_text = f"{health_score:.2f}" if health_score is not None else "None"
         logger.info(
             f"[MacroNewsLayer] 완료: score={final_score:.2f} "
             f"(news={news_score:.2f} + yt={youtube_bonus:.2f}) "
-            f"level={level} health={health_score:.2f}"
+            f"level={level} health={health_text}"
+            + ("" if active.policy == "v1" else f" policy={active.policy}")
         )
         logger.info(f"[MacroNewsLayer] 판정 근거: {reasoning}")
+        if shadow is not None:
+            logger.info(
+                f"[MacroNewsLayer] shadow({shadow.get('policy')}): level={shadow.get('level')} "
+                f"score={shadow.get('score')} health={shadow.get('health')}"
+                + (f" error={shadow['error']}" if "error" in shadow else "")
+            )
 
         # Step 6: FR-05 표준화 reasoning 조립
+        policy_version = self.policy_version if active.policy == "v1" else POLICY_V2_VERSION
         reasoning_text, reasoning_json = self.reasoning_builder.build(
             level=level,
             score=final_score,
@@ -357,31 +424,126 @@ class MacroNewsLayer:
             thresholds_used=dynamic_thresholds,
             market_profile=market_profile,
             contributing_factors=contributing_factors,
-            health_components={
-                "health_score": health_score,
-            },
+            health_components=(
+                {"health_score": health_score} if active.policy == "v1"
+                else dict(active.health_components)
+            ),
             dq_state=dq_state,
-            policy_version=self.policy_version,
+            policy_version=policy_version,
         )
 
+        result_news = active.news_events
         return MacroNewsResult(
             score=round(final_score, 2),
             level=level,
-            news_events=news_events,
+            news_events=result_news,
             youtube_events=youtube_events,
             news_score=round(news_score, 2),
             youtube_bonus=round(youtube_bonus, 2),
-            top_news=news_events[:3],
+            top_news=result_news[:3],
             top_youtube=youtube_events[:3],
             reasoning=reasoning_text,
-            health_score=round(health_score, 2),
+            # v2 판정불가(None)는 NONE/SYSTEM_DEGRADED 에서만 발생 — 소비자(float) 호환 위해 0.0
+            health_score=round(health_score, 2) if health_score is not None else 0.0,
             reasoning_json=reasoning_json,
-            policy_version=self.policy_version,
+            policy_version=policy_version,
             dq_state=dq_state,
             ops_warnings=ops_warnings,
             youtube_summaries=youtube_summaries,
             youtube_comparisons=youtube_comparisons,
+            failed_sources=failed_sources,
+            news_source_results=news_source_results,
+            source_level_success_rate=round(source_level_rate, 3),
+            active_policy=active.policy,
+            shadow=shadow,
         )
+
+    def _news_candidates(self, raw_news_events: list[CollectorEvent]) -> list[CollectorEvent]:
+        """
+        제목: v2 입력 후보 (Q2)
+        내용: NewsCollector.last_candidates(필터 전 복사본, 소스당 30) 우선.
+              없으면(Mock/구버전) 검증 통과 raw(last_raw_events) 사용. 항상 복사본 반환.
+        """
+        raw = getattr(self.news_collector, "last_candidates", None)
+        source = raw if isinstance(raw, list) else raw_news_events
+        return [dataclasses.replace(e) for e in source if isinstance(e, CollectorEvent)]
+
+    def _source_level_dq(
+        self, dq_state: DataQualityState, source_level_results: dict[str, bool],
+    ) -> DataQualityState:
+        """
+        제목: v2 정책용 소스 단위 DQ (Q2 리뷰 M3)
+        내용: v1 DQ(수집기 2키)의 fresh/lag/zscore 는 그대로 두고, 성공률만 소스 단위
+              (뉴스 소스별 + youtube_collector)로 재계산해 degraded 재판정. DB 저장 없음.
+              재계산 실패 시 v1 DQ 그대로 사용.
+        """
+        try:
+            rate = self.dq_monitor._compute_source_success_rate(source_level_results)
+            reasons = self.dq_monitor._collect_degraded_reasons(
+                success_rate=rate,
+                fresh_ratio=dq_state.fresh_event_ratio,
+                lag_seconds=dq_state.lag_seconds_p95,
+                zscore=dq_state.volume_zscore,
+            )
+            return dataclasses.replace(
+                dq_state, source_success_rate=rate, degraded_flag=bool(reasons),
+                degraded_reasons=reasons, source_results=dict(source_level_results),
+            )
+        except Exception as e:
+            logger.warning(f"[MacroNewsLayer] v2 소스 단위 DQ 계산 실패 (v1 DQ 사용): "
+                           f"{type(e).__name__}: {e}")
+            return dq_state
+
+    def _evaluate_policies(
+        self, inputs: dict[str, DetectionInput], ops_warnings: list[str],
+    ) -> tuple[PolicyOutcome, dict | None]:
+        """
+        제목: active/shadow 정책 평가 (Q2)
+        내용: 정책별 입력(inputs[name]) 사용 — v1 은 수집기 단위 DQ, v2 는 소스 단위 DQ.
+              active=v2 평가 예외 → v1 로 fail-safe + ops_warnings. shadow 예외 → error 기록.
+        """
+        active_name = self.detection_policy
+        shadow_name = other_policy(active_name)
+        try:
+            active = self._policies[active_name].evaluate(inputs[active_name])
+        except Exception as e:
+            if active_name == "v1":
+                raise
+            warning = f"detection_policy_fallback: v2_error={type(e).__name__}: {e}"[:300]
+            ops_warnings.append(warning)
+            logger.error(f"[MacroNewsLayer] 운영 경고 — {warning} → v1 판정 사용")
+            active = self._policies["v1"].evaluate(inputs["v1"])
+            shadow_name = "v2"
+            return active, {"policy": shadow_name, "error": f"{type(e).__name__}: {e}"[:200]}
+        try:
+            shadow: dict | None = outcome_to_shadow(
+                self._policies[shadow_name].evaluate(inputs[shadow_name])
+            )
+        except Exception as e:
+            logger.warning(f"[MacroNewsLayer] shadow({shadow_name}) 평가 실패 (무시): "
+                           f"{type(e).__name__}: {e}")
+            shadow = {"policy": shadow_name, "error": f"{type(e).__name__}: {e}"[:200]}
+        return active, shadow
+
+    def _build_news_source_results(self, collect_ok: bool) -> tuple[dict[str, bool], list[dict]]:
+        """
+        제목: DQ 입력용 뉴스 소스 단위 성공 dict 조립 (Q1)
+        내용: NewsCollector.last_source_results(SourceResult 목록)를 {소스명: ok} 로 변환.
+              collect() 자체 예외 → {"news_collector": False} (기존 의미 유지).
+              SourceResult 목록이 없으면(Mock/구버전 수집기) {"news_collector": True} 폴백.
+
+        Args:
+            collect_ok: news_collector.collect() 예외 없이 완료 여부
+
+        Returns:
+            (source_results, news_source_results): DQ 입력 dict, 기록용 dict 목록
+        """
+        if not collect_ok:
+            return {"news_collector": False}, []
+        raw = getattr(self.news_collector, "last_source_results", None)
+        if isinstance(raw, list) and raw and all(isinstance(r, SourceResult) for r in raw):
+            return {r.name: r.ok for r in raw}, [r.to_dict() for r in raw]
+        return {"news_collector": True}, []
 
     def _compute_news_score(self, events: list[CollectorEvent]) -> float:
         """

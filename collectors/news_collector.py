@@ -4,6 +4,7 @@
       수행하여 CollectorEvent 리스트를 반환합니다.
 
 주요 클래스:
+  - SourceResult: 소스별 수집 결과 (Q1, DQ 소스 단위 성공률·운영 경고 입력)
   - NewsCollector: Tier별 RSS 수집, 키워드 필터링, AI 스코어링, 교차검증
 
 주요 함수:
@@ -16,15 +17,32 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import socket as _socket
+from collections import defaultdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 import feedparser
 
 from collectors.base import BaseCollector, CollectorEvent
+from config.keyword_rules import (  # noqa: F401 — v1 사전 재노출 (tests·외부 import 호환)
+    AI_SCORE_MIN_KEYWORD,
+    KEYWORD_THRESHOLD,
+    URGENT_KEYWORDS_CENTRAL_BANK,
+    URGENT_KEYWORDS_EARNINGS,
+    URGENT_KEYWORDS_FISCAL,
+    URGENT_KEYWORDS_GEO,
+    URGENT_KEYWORDS_L1,
+    URGENT_KEYWORDS_L2,
+    URGENT_KEYWORDS_MACRO_DATA,
+    URGENT_KEYWORDS_POLICY,
+    URGENT_KEYWORDS_TARIFF,
+    URGENT_KEYWORDS_TECH_REG,
+)
 from config.settings import NEWS_SOURCE_REGISTRY, NEWS_WINDOW_HOURS
 from core.logger import get_logger
 from validators.news_validator import NewsValidator
@@ -33,9 +51,83 @@ from validators.news_validator import NewsValidator
 # 운영에서 RSS 서버 hang 시 GitHub Actions timeout(10분) 도달 위험 차단.
 _socket.setdefaulttimeout(15)
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"  # Q1: SourceResult / last_source_results (소스별 성공 판정)
 
 logger = get_logger(__name__)
+
+
+# ────────────────────────────────────────────────────────
+# 소스별 수집 결과 (Q1)
+# ────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class SourceResult:
+    """
+    제목: 뉴스 소스 1개의 수집 결과
+    내용: DQ 소스 단위 성공률과 운영 경고(failed_sources)의 입력.
+
+    성공(ok) 규칙 (2026-10-12 마스터 확정 Q1-1):
+      - 예외 없음 AND entries_total >= 1 AND
+        (HTTP status 2xx/3xx  또는  status 속성 없음 + bozo 아님)
+      - 윈도우 내 0건(in_window=0)은 성공 (예: fed_rss 평시)
+    """
+
+    name: str
+    tier: str
+    http_status: int | None  # feed.status 가 int 일 때만, 아니면 None
+    entries_total: int  # len(feed.entries) (소스당 절단 전)
+    in_window: int  # 중복 제거·윈도우 필터 후 채택 건수
+    ok: bool
+    error: str | None = None  # 실패 사유 (ok=True 이면 None)
+    bozo: bool = False  # 파서 경고 관측용
+
+    def to_dict(self) -> dict:
+        """JSONB 적재용 dict."""
+        return asdict(self)
+
+
+def build_source_result(
+    name: str,
+    tier: str,
+    feed: Any,
+    in_window: int,
+    exc: BaseException | None = None,
+) -> SourceResult:
+    """
+    제목: 소스별 수집 결과 판정
+    내용: feedparser 결과(또는 예외)로 SourceResult 를 만든다. 부수효과 없음.
+
+    Args:
+        name: 소스명
+        tier: 'S'|'A'|'B'
+        feed: feedparser.parse 반환값 (예외 시 None)
+        in_window: 윈도우 내 채택 건수
+        exc: 수집 중 발생 예외
+
+    Returns:
+        SourceResult
+    """
+    if exc is not None:
+        return SourceResult(name, tier, None, 0, 0, False, f"exception:{type(exc).__name__}")
+
+    raw_status = getattr(feed, "status", None)
+    status = raw_status if isinstance(raw_status, int) and not isinstance(raw_status, bool) else None
+    entries = getattr(feed, "entries", None)
+    total = len(entries) if isinstance(entries, list) else 0
+    raw_bozo = getattr(feed, "bozo", False)
+    bozo = bool(raw_bozo) if isinstance(raw_bozo, int) else False  # bool ⊂ int
+
+    if status is not None:
+        if not 200 <= status < 400:
+            return SourceResult(name, tier, status, total, in_window, False, f"http_{status}", bozo)
+    elif bozo:
+        # status 없음 + bozo → 네트워크 오류(URLError) 등 (feedparser api.py)
+        exc_obj = getattr(feed, "bozo_exception", None)
+        reason = type(exc_obj).__name__ if isinstance(exc_obj, BaseException) else "bozo"
+        return SourceResult(name, tier, None, total, in_window, False, f"no_status:{reason}", bozo)
+
+    if total < 1:
+        return SourceResult(name, tier, status, total, in_window, False, "empty_feed", bozo)
+    return SourceResult(name, tier, status, total, in_window, True, None, bozo)
 
 
 # ────────────────────────────────────────────────────────
@@ -67,198 +159,50 @@ class AIClientProtocol(Protocol):
 
 
 # ────────────────────────────────────────────────────────
-# 긴급 키워드 정의
-# ────────────────────────────────────────────────────────
-# 제목: L1 긴급 키워드
-# 내용: 3인 전문가 협의 설계서 Round 1 확정값
-URGENT_KEYWORDS_L1: dict[str, float] = {
-    "emergency": 5.0,
-    "crisis": 4.5,
-    "unprecedented": 4.0,
-    "extraordinary measures": 5.0,
-    "circuit breaker": 5.0,
-    "trading halt": 4.5,
-    "market closed": 5.0,
-    "flash crash": 4.5,
-    "federal reserve announces": 5.0,
-}
-
-# 제목: L2 긴급 키워드
-# 내용: L1보다 낮은 충격, 세부 분석 필요
-URGENT_KEYWORDS_L2: dict[str, float] = {
-    "significant": 2.5,
-    "concern": 2.0,
-    "volatility spike": 3.0,
-    "sell-off": 2.5,
-    "plunge": 3.0,
-    "tumble": 2.5,
-    "surge": 2.5,
-    "rate hike": 3.0,
-    "rate cut": 3.0,
-    "recession": 3.5,
-}
-
-# ────────────────────────────────────────────────────────
-# 확장 키워드 v1.1.0 (2026-05-03)
-# 추가 영역: 관세·무역 / 지정학 / 미국 신용·재정 / AI·반도체 규제
-# 변경 없음: URGENT_KEYWORDS_L1, URGENT_KEYWORDS_L2 (기존 유지)
+# 긴급 키워드 정의 — Q2: config/keyword_rules.py 로 값·순서 그대로 이동 (재노출, 호환 유지)
 # ────────────────────────────────────────────────────────
 
-# 관세·무역정책 충격
-URGENT_KEYWORDS_TARIFF: dict[str, float] = {
-    # L1급 — 즉각 충격 표현 (단독 Tier A 1건으로 keyword_score >= 3.5)
-    "tariff war": 4.0,
-    "trade war": 3.5,
-    "trade war escalates": 4.5,
-    "export ban": 4.0,
-    "import embargo": 4.5,
-    "reciprocal tariff": 4.0,
-    "trade deal collapse": 4.5,
-    # L2급 — 단독 threshold 초과하나 Score 낮음 (복합 시 상승)
-    "tariff": 2.0,
-    "new tariff": 2.5,
-    "export control": 2.5,
-    "trade sanction": 3.0,
-    "section 301": 3.5,
-    "section 232": 3.5,
-    "trade restriction": 2.5,
-}
+# 제목: 소스당 엔트리 처리 상한 (Q2)
+# 내용: v1 판정은 소스당 앞 10건(기존 entries[:10])만 사용 — 결과 불변.
+#       v2 후보는 소스당 앞 30건까지 수집(1회 수집, 같은 피드 재사용).
+NEWS_ENTRIES_PER_SOURCE_V1: int = 10
+NEWS_ENTRIES_PER_SOURCE: int = 30
 
-# 지정학적 긴급사태
-URGENT_KEYWORDS_GEO: dict[str, float] = {
-    # L1급
-    "nuclear threat": 5.0,
-    "nuclear attack": 5.0,
-    "nuclear weapon": 4.5,
-    "military strike": 5.0,
-    "oil embargo": 4.5,
-    "strait of hormuz": 4.5,
-    "war declared": 5.0,
-    # L2급 — 복합 표현만 수록 (단독 일반어 제외)
-    "invasion": 3.5,
-    "airstrike": 3.0,
-    "missile attack": 3.5,
-    "military escalation": 3.5,
-    "geopolitical crisis": 3.5,
-    "conflict escalation": 3.0,
-}
 
-# 미국 신용·재정 위기
-URGENT_KEYWORDS_FISCAL: dict[str, float] = {
-    # L1급
-    "us credit downgrade": 5.0,
-    "credit downgrade us": 5.0,
-    "debt default": 5.0,
-    "debt ceiling crisis": 4.5,
-    "government shutdown begins": 4.5,
-    "moody's downgrades": 4.0,
-    "fitch downgrades": 4.0,
-    "treasury auction fails": 4.5,
-    "treasury auction tail": 4.0,
-    # L2급
-    "debt ceiling": 3.5,
-    "government shutdown": 3.0,
-    "credit downgrade": 3.0,
-    "fiscal cliff": 3.0,
-    "bond auction": 2.5,
-    "deficit warning": 2.5,
-}
-
-# AI·반도체 규제 충격
-URGENT_KEYWORDS_TECH_REG: dict[str, float] = {
-    # L1급
-    "chip export ban": 4.5,
-    "semiconductor ban": 4.5,
-    "semiconductor export ban": 4.5,
-    "nvidia ban": 4.5,
-    "tsmc restriction": 4.0,
-    "chip export control": 4.0,
-    "ai executive order": 4.0,
-    # L2급
-    "semiconductor restriction": 3.5,
-    "chip restriction": 3.0,
-    "entity list": 2.5,
-    "antitrust ruling tech": 3.5,
-    "big tech breakup": 3.5,
-    "ai regulation": 2.0,
-    "export control ai": 3.0,
-}
 # ────────────────────────────────────────────────────────
-# B시스템 보완 키워드 v1.2.0 (2026-05-09)
-# 추가 영역: 매크로 지표 / 중앙은행 / 실적 / 정책 일반
-# 목적: A시스템(가격 기반)이 놓치는 선행 정보 신호 포착
+# 교차검증 (무상태 — NewsCollector 와 v2 정책 공용, Q2 리뷰 m4)
 # ────────────────────────────────────────────────────────
+_TOPIC_STOPWORDS: frozenset[str] = frozenset(
+    {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "is", "are", "was"}
+)
 
-# 매크로 지표 발표 — A가 못 잡는 선행 신호
-URGENT_KEYWORDS_MACRO_DATA: dict[str, float] = {
-    # L2급
-    "cpi report": 3.0,
-    "inflation report": 3.0,
-    "nonfarm payrolls": 3.5,
-    "non-farm payrolls": 3.5,
-    "jobs report": 2.5,
-    "unemployment rate": 2.5,
-    "ppi report": 2.5,
-    "pce inflation": 3.0,
-    "gdp report": 2.5,
-    "ism manufacturing": 2.0,
-    "retail sales": 2.0,
-    "consumer confidence": 2.0,
-    # L1급 — 시장 충격
-    "inflation surge": 3.5,
-    "hot cpi": 4.0,
-    "jobs miss": 3.0,
-    "jobs beat": 2.5,
-}
 
-# Fed/중앙은행 인물·일정 — A가 못 잡는 정책 신호
-URGENT_KEYWORDS_CENTRAL_BANK: dict[str, float] = {
-    "powell speech": 3.5,
-    "powell testimony": 4.0,
-    "powell remarks": 3.0,
-    "fomc minutes": 3.0,
-    "fomc meeting": 2.5,
-    "fed dot plot": 3.0,
-    "jackson hole": 3.5,
-    "fed pivot": 4.0,
-    "hawkish": 2.0,
-    "dovish": 2.0,
-    "ecb decision": 2.5,
-    "boj decision": 2.5,
-    "bank of japan": 2.5,
-}
+def compute_topic_hash(title: str) -> str:
+    """
+    제목: 주제 해시 계산
+    내용: 제목의 불용어를 제거한 뒤 상위 5 단어의 정렬된 조합으로 MD5 해시 생성.
+          유사한 제목끼리 동일 해시를 공유하여 교차검증에 활용됩니다.
+    """
+    words = [w.lower().strip(".,!?") for w in title.split() if w.lower() not in _TOPIC_STOPWORDS]
+    key = " ".join(sorted(words[:5]))
+    return hashlib.md5(key.encode()).hexdigest()[:8]  # noqa: S324
 
-# 실적 시즌 — A는 가격 반응 후에야 잡음
-URGENT_KEYWORDS_EARNINGS: dict[str, float] = {
-    "earnings beat": 2.0,
-    "earnings miss": 2.5,
-    "guidance cut": 3.5,
-    "guidance raised": 2.5,
-    "revenue miss": 3.0,
-    "revenue beat": 2.0,
-    "profit warning": 4.0,
-    "earnings season": 1.5,
-    "preliminary results": 2.5,
-}
 
-# 정책·발표 일반 — 헤드라인 충격
-URGENT_KEYWORDS_POLICY: dict[str, float] = {
-    "trump speech": 3.0,
-    "trump announces": 3.0,
-    "white house statement": 2.5,
-    "presidential order": 3.5,
-    "executive order": 3.0,
-    "treasury statement": 2.5,
-    "fed statement": 3.0,
-}
-
-# 제목: 키워드 매칭 최소 임계값
-# 내용: 이 점수 미만의 이벤트는 제외
-KEYWORD_THRESHOLD: float = 2.0
-
-# 제목: AI 분석 임계값
-# 내용: keyword_score가 이 이상인 이벤트만 AI 분석 수행 (쿼터 절약)
-AI_SCORE_MIN_KEYWORD: float = 2.5
+def apply_cross_validation(events: list[CollectorEvent]) -> list[CollectorEvent]:
+    """
+    제목: 복수 소스 교차검증
+    내용: topic_hash 계산 → 그룹별 고유 소스 수를 source_count 에 기록(입력 이벤트 in-place).
+    """
+    for event in events:
+        event.topic_hash = compute_topic_hash(event.title)
+    groups: dict[str, list[str]] = defaultdict(list)
+    for event in events:
+        if event.topic_hash:
+            groups[event.topic_hash].append(event.source_name)
+    for event in events:
+        if event.topic_hash and event.topic_hash in groups:
+            event.source_count = len(set(groups[event.topic_hash]))
+    return events
 
 
 class NewsCollector(BaseCollector):
@@ -301,6 +245,15 @@ class NewsCollector(BaseCollector):
         # 내용: collect() 호출마다 초기화
         self._seen_event_ids: set[str] = set()
 
+        # 제목: 소스별 수집 결과 (Q1) — collect() 호출마다 초기화
+        self.last_source_results: list[SourceResult] = []
+
+        # 제목: v2 후보 (Q2) — collect() 호출마다 초기화
+        # 내용: last_candidates = 키워드 필터 *전* 검증 통과 후보 복사본 (소스당 최대 30건).
+        #       _extra_events = 소스당 10번째 이후(엔트리 index ≥ 10) 윈도우 내 이벤트.
+        self.last_candidates: list[CollectorEvent] = []
+        self._extra_events: list[CollectorEvent] = []
+
         logger.info(f"[NewsCollector] v{VERSION} 초기화 (window={window_hours}h, ai={ai_client is not None})")
 
     def collect(self) -> list[CollectorEvent]:
@@ -324,6 +277,9 @@ class NewsCollector(BaseCollector):
 
         # 제목: 중복 제거 집합 초기화
         self._seen_event_ids = set()
+        self.last_source_results = []
+        self._extra_events = []
+        self.last_candidates = []
 
         # Step 1: Tier별 수집
         raw_events: list[CollectorEvent] = []
@@ -341,6 +297,11 @@ class NewsCollector(BaseCollector):
         # 이 시점이 "수집 시스템 건강성" 측정의 정확한 입력
         self.last_raw_events = list(validated)
 
+        # Q2: v2 후보 스냅샷 — 키워드 필터(in-place 점수 기록) *전*에 복사.
+        # 소스당 10번째 이후·v2_only 소스 이벤트는 v1 경로에 넣지 않고 validate() 만 적용.
+        # 리뷰 m3: 실패해도 v1 경로 무영향 (빈 후보 + 경고).
+        self._snapshot_candidates(validated)
+
         # Step 3: 키워드 1차 필터
         filtered = self._filter_by_keywords(validated)
         logger.info(f"[NewsCollector] 키워드 필터 후: {len(filtered)}건")
@@ -356,6 +317,26 @@ class NewsCollector(BaseCollector):
 
         logger.info(f"[NewsCollector] 수집 완료: 최종 {len(cross_validated)}건")
         return cross_validated
+
+    def _snapshot_candidates(self, validated: list[CollectorEvent]) -> None:
+        """
+        제목: v2 후보 스냅샷 (Q2)
+        내용: last_candidates = 검증 통과 v1 이벤트 + 검증 통과 추가 이벤트의 복사본.
+              예외 시 last_candidates=[] + WARNING (v1 수집 결과에 영향 없음).
+        """
+        try:
+            extras_ok = [e for e in self._extra_events if self.validator.validate(e)]
+            self.last_candidates = [dataclasses.replace(e) for e in [*validated, *extras_ok]]
+            if self._extra_events:
+                logger.info(
+                    f"[NewsCollector] v2 후보: {len(self.last_candidates)}건 "
+                    f"(v1 {len(validated)} + 추가 {len(extras_ok)}/{len(self._extra_events)})"
+                )
+        except Exception as e:
+            self.last_candidates = []
+            logger.warning(
+                f"[NewsCollector] v2 후보 스냅샷 실패 (v1 무영향, 빈 후보): {type(e).__name__}: {e}"
+            )
 
     def _collect_tier(self, tier: str) -> list[CollectorEvent]:
         """
@@ -377,15 +358,19 @@ class NewsCollector(BaseCollector):
             if not url:
                 continue
 
+            source_count_before = len(events)
+            # Q2 리뷰 M1: v2_only 소스(신규 fed_speeches/marketwatch)는 v1 경로(events) 미포함.
+            # 수집·SourceResult·v2 후보에는 포함. in_window 는 v1 소스와 같은 기준(index<10)으로 집계.
+            v2_only = bool(config.get("v2_only", False))
+            v2_only_in_window = 0
+            feed: Any = None
             try:
                 feed = self._retry_request(feedparser.parse, url)
-
-                #주석
-                http_status = getattr(feed, "status", "N/A")
-                source_count_before = len(events)
                 entries = getattr(feed, "entries", [])
 
-                for entry in entries[:10]:  # 소스당 최근 10건
+                # Q2: 소스당 30건 처리. index < 10 → v1 경로(events), 이후 → v2 전용(_extra_events).
+                # 중복 제거는 index 순서대로 동일하게 적용되므로 v1 결과는 entries[:10] 과 같다.
+                for idx, entry in enumerate(entries[:NEWS_ENTRIES_PER_SOURCE]):
                     event = self._entry_to_event(entry, source_name, tier, config)
                     if event is None:
                         continue
@@ -401,21 +386,39 @@ class NewsCollector(BaseCollector):
                     if not self._is_within_window(event.published_at):
                         continue
 
+                    if v2_only:
+                        if idx < NEWS_ENTRIES_PER_SOURCE_V1:
+                            v2_only_in_window += 1
+                        self._extra_events.append(event)
+                        continue
+                    if idx >= NEWS_ENTRIES_PER_SOURCE_V1:
+                        self._extra_events.append(event)
+                        continue
                     events.append(event)
-
-
-
-
-                # 제목: 소스별 수집 결과 로그
-                collected = len(events) - source_count_before
-                logger.info(
-                    f"[NewsCollector] {source_name} (Tier {tier}): "
-                    f"HTTP={http_status}, RSS={len(entries)}건, "
-                    f"윈도우내={collected}건"
-                )
 
             except Exception as e:
                 logger.warning(f"[NewsCollector] {source_name} 수집 실패: {type(e).__name__}: {e}")
+                self.last_source_results.append(
+                    build_source_result(source_name, tier, None, 0, exc=e)
+                )
+                continue
+
+            # 제목: 소스별 수집 결과 판정·로그 (Q1)
+            collected = len(events) - source_count_before + v2_only_in_window
+            result = build_source_result(source_name, tier, feed, collected)
+            self.last_source_results.append(result)
+            http_label = result.http_status if result.http_status is not None else "N/A"
+            if result.ok:
+                logger.info(
+                    f"[NewsCollector] {source_name} (Tier {tier}): "
+                    f"HTTP={http_label}, RSS={result.entries_total}건, "
+                    f"윈도우내={collected}건" + (" (bozo)" if result.bozo else "")
+                )
+            else:
+                logger.warning(
+                    f"[NewsCollector] {source_name} (Tier {tier}) 소스 실패: {result.error} "
+                    f"HTTP={http_label}, RSS={result.entries_total}건, 윈도우내={collected}건"
+                )
 
         return events
 
@@ -630,12 +633,7 @@ class NewsCollector(BaseCollector):
         """
         제목: 복수 소스 교차검증
         내용: topic_hash가 같은 이벤트를 그룹화하여 source_count를 업데이트합니다.
-              복수 소스에서 보도된 이벤트는 신뢰도가 높아집니다.
-
-        처리 플로우:
-          1. 각 이벤트의 topic_hash 계산
-          2. topic_hash 기준으로 그룹화
-          3. 그룹 내 소스 수 카운트 → source_count 업데이트
+              Q2 리뷰 m4: 무상태 모듈 함수 apply_cross_validation 위임 (동작 동일).
 
         Args:
             events: 교차검증 대상 이벤트
@@ -643,30 +641,11 @@ class NewsCollector(BaseCollector):
         Returns:
             list[CollectorEvent]: source_count가 업데이트된 이벤트
         """
-        # 제목: topic_hash 계산
-        for event in events:
-            event.topic_hash = self._compute_topic_hash(event.title)
-
-        # 제목: 그룹별 소스 카운트
-        from collections import defaultdict
-        groups: dict[str, list[str]] = defaultdict(list)
-        for event in events:
-            if event.topic_hash:
-                groups[event.topic_hash].append(event.source_name)
-
-        # 제목: source_count 업데이트
-        for event in events:
-            if event.topic_hash and event.topic_hash in groups:
-                unique_sources = len(set(groups[event.topic_hash]))
-                event.source_count = unique_sources
-
-        return events
+        return apply_cross_validation(events)
 
     def _compute_topic_hash(self, title: str) -> str:
         """
-        제목: 주제 해시 계산
-        내용: 제목의 불용어를 제거한 뒤 상위 5 단어의 정렬된 조합으로 MD5 해시 생성.
-              유사한 제목끼리 동일 해시를 공유하여 교차검증에 활용됩니다.
+        제목: 주제 해시 계산 (모듈 함수 compute_topic_hash 위임)
 
         Args:
             title: 기사 제목
@@ -674,10 +653,7 @@ class NewsCollector(BaseCollector):
         Returns:
             str: 8자리 MD5 해시
         """
-        stopwords = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "is", "are", "was"}
-        words = [w.lower().strip(".,!?") for w in title.split() if w.lower() not in stopwords]
-        key = " ".join(sorted(words[:5]))
-        return hashlib.md5(key.encode()).hexdigest()[:8]  # noqa: S324
+        return compute_topic_hash(title)
 
     def _is_within_window(self, published_at: datetime) -> bool:
         """

@@ -99,3 +99,10 @@ def test_diagnostics_step_always_and_non_blocking(text) -> None:
         "|| needs.gate.outputs.inside == 'true') }}"
     ) in step
     assert "continue-on-error: true" in step
+
+
+@pytest.mark.unit
+def test_detection_policy_env_from_vars(text) -> None:
+    """Q2: alert job env 에 DETECTION_POLICY 를 repository vars 로 전달 (미설정=빈 문자열 → v1)."""
+    alert = _job_block(text, "alert")
+    assert re.search(r"^      DETECTION_POLICY: \$\{\{ vars\.DETECTION_POLICY \}\}", alert, re.MULTILINE)

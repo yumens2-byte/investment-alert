@@ -164,11 +164,11 @@ def test_generate_alert_image_kind_function_exists() -> None:
 
 
 @pytest.mark.unit
-def test_run_alert_version_v140() -> None:
-    """run_alert VERSION이 1.4.0 (P1/P2/P3/P5/P7) — 텍스트 검사 대신 속성 검사"""
+def test_run_alert_version_v150() -> None:
+    """run_alert VERSION이 1.5.0 (v1.4.0 P1~P7 + Q1 소스 장애 경고) — 속성 검사"""
     import run_alert
 
-    assert run_alert.VERSION == "1.4.0"
+    assert run_alert.VERSION == "1.5.0"
 
 
 @pytest.mark.unit

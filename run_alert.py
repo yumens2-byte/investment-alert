@@ -51,12 +51,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_alert")
 
-VERSION = "1.4.0"  # P1 gate 위임 / P2 창 claim / P3 RunRecorder·종료코드 / P5 legacy 삭제 / P7 DupGuard
+VERSION = "1.5.0"  # Q1 소스 장애 내부 경고 / v1.4.0: P1 gate 위임 / P2 창 claim / P3 RunRecorder·종료코드 / P5 legacy 삭제 / P7 DupGuard
 
 CHANNELS: tuple[str, ...] = ("tg_free", "tg_paid", "tg_internal", "x")
 NOTIFY_OUTCOMES: frozenset[str] = frozenset({"partial_fail", "all_fail", "error"})
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 PUBLIC_CHANNELS: tuple[str, ...] = ("tg_free", "tg_paid", "x")  # 창 claim 대상 (외부 공개)
+# Q1: 소스 장애 경고 억제 (cron 21,33 × 5h ≈ 일 10회 → 소스당 1일 1회)
+SOURCE_FAIL_COOLDOWN_PREFIX: str = "ops:source_fail:"
+SOURCE_FAIL_COOLDOWN_MINUTES: int = 1440
 _TG_BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
 
 
@@ -310,6 +313,63 @@ def _record_publish_result(alert_store, signal, published: dict, errors: dict,
 # 메인 실행
 # ─────────────────────────────────────────────────────────────
 
+def _notify_source_failures(alert_store, result) -> None:
+    """
+    제목: 일부 뉴스 소스 장애 내부 TG 경고 (Q1, Q-D5)
+    내용: SYSTEM_DEGRADED 와 별개의 운영 경고. 소스별 ia_cooldown_state 키
+          'ops:source_fail:<소스>' 로 SOURCE_FAIL_COOLDOWN_MINUTES 동안 재경고 억제.
+          DRY_RUN / alert_store 없음 → 생략. 실패는 삼킨다 (파이프라인·종료코드 불변).
+    """
+    # 리뷰 m2: collect() 전체 예외(news_collector)는 SYSTEM_DEGRADED 경보 대상 — 중복 경고 제외
+    failed = [n for n in (getattr(result, "failed_sources", None) or []) if n != "news_collector"]
+    if not failed:
+        return
+    if DRY_RUN or alert_store is None:
+        logger.info(f"[run_alert] 소스 장애 경고 생략(DRY_RUN/저장소 없음): {failed}")
+        return
+    try:
+        fresh = [
+            n for n in failed
+            if not alert_store.is_cooldown_active(f"{SOURCE_FAIL_COOLDOWN_PREFIX}{n}")
+        ]
+        if not fresh:
+            logger.info(f"[run_alert] 소스 장애 경고 억제(쿨다운): {failed}")
+            return
+        by_name = {
+            r.get("name"): r for r in (getattr(result, "news_source_results", None) or [])
+            if isinstance(r, dict)
+        }
+        # 소스 단위 성공률 우선 (v1 DQ 는 수집기 2키 — 리뷰 M3), 없으면 DQ 값
+        rate = getattr(result, "source_level_success_rate", None)
+        if rate is None:
+            rate = getattr(getattr(result, "dq_state", None), "source_success_rate", None)
+        rate_text = f"{rate:.2f}" if isinstance(rate, int | float) else "-"
+        lines = []
+        for n in fresh:
+            info = by_name.get(n, {})
+            tier = html.escape(str(info.get("tier", "-")))
+            reason = html.escape(str(info.get("error", "collect_failed")))
+            lines.append(f"- {html.escape(str(n))} (Tier {tier}): {reason}\n")
+        text = (
+            "<b>[run_alert] 수집 소스 장애</b>\n"
+            + "".join(lines)
+            + f"success_rate={rate_text} level={html.escape(str(result.level))}"
+        )
+        from publishers.telegram_publisher import TelegramPublisher
+        TelegramPublisher(dry_run=DRY_RUN).publish_internal(text[:3500])
+        for n in fresh:
+            alert_store.set_cooldown(
+                f"{SOURCE_FAIL_COOLDOWN_PREFIX}{n}", "source_fail",
+                minutes=SOURCE_FAIL_COOLDOWN_MINUTES,
+            )
+        logger.warning(f"[run_alert] 소스 장애 내부 경고 발송: {fresh}")
+    except Exception as e:
+        logger.warning(
+            f"[run_alert] 소스 장애 경고 발송 실패(무시): "
+            f"{_redact_secrets(f'{type(e).__name__}: {e}')[:300]}"
+        )
+
+
 def _run_pipeline(alert_store, rec: RunRecorder) -> dict:
     """창 판정 → 감지 → claim → 발행 → 기록. outcome 은 rec.finish 로 확정한다."""
     window: WindowDecision | None = None
@@ -368,6 +428,17 @@ def _run_pipeline(alert_store, rec: RunRecorder) -> dict:
         alert_id=signal.alert_id,
         news_events=len(result.news_events),
         youtube_events=len(result.youtube_events),
+    )
+    # Q1: 소스별 수집 결과 기록 + 일부 소스 장애 내부 경고 (모든 outcome 공통)
+    rec.add_detail(
+        source_results=list(result.news_source_results or []),
+        failed_sources=list(result.failed_sources or []),
+    )
+    _notify_source_failures(alert_store, result)
+    # Q2: 판정 정책 + 비활성 정책 shadow 기록 (컬럼 추가 없이 detail 만, 모든 outcome 공통)
+    rec.add_detail(
+        detection_policy=getattr(result, "active_policy", "v1"),
+        shadow=getattr(result, "shadow", None),
     )
 
     if result.level == "NONE" or not signal.should_publish:

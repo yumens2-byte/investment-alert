@@ -7,6 +7,7 @@
   - get_env(key, default, required): 환경변수 안전 조회
   - get_env_float(key, default): float 변환 포함 조회
   - get_env_bool(key, default): bool 변환 포함 조회
+  - get_env_int(key, default): int 변환 포함 조회 (빈 문자열/비정수 → default)
 
 주요 상수:
   - DRY_RUN: 모의 실행 여부
@@ -25,7 +26,7 @@ from dotenv import load_dotenv
 
 from core.logger import get_logger
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"  # Q1: 레지스트리(fed_speeches/marketwatch, yahoo 비활성) + get_env_int
 
 logger = get_logger(__name__)
 
@@ -97,6 +98,34 @@ def get_env_bool(key: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("true", "1", "yes", "on")
 
 
+def get_env_int(key: str, default: int) -> int:
+    """
+    제목: int 환경변수 조회
+    내용: 미설정·빈 문자열·공백 → default (GitHub secrets 미설정 시 "" 전달 대응).
+          비정수 → WARNING 후 default. 정수 문자열은 그대로 변환.
+
+    Args:
+        key: 환경변수 키
+        default: 기본값
+
+    Returns:
+        int 값
+    """
+    raw = os.getenv(key)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logger.warning(f"[settings] {key}={raw!r} 정수 아님 → 기본값 {default} 사용")
+        return default
+
+
+# 제목: DQ 신선도 윈도우 공통 기본값 (DQMonitor · health v2 공용)
+# 내용: v1 health recency 는 기존 5400초 기본값 유지 (v1 판정 불변 원칙)
+DQ_FRESH_WINDOW_DEFAULT_SECONDS: int = 86400
+
+
 # ────────────────────────────────────────────────────────
 # 운영 제어
 # ────────────────────────────────────────────────────────
@@ -143,24 +172,37 @@ CHANNEL_WEIGHTS: dict[str, float] = {
 NEWS_SOURCE_REGISTRY: dict[str, dict[str, dict]] = {
     "S": {
         "fed_rss": {
-            "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",  # 통화정책 전용 (A안 적용 2026-04-25)
+            # 통화정책 전용 (A안 적용 2026-04-25)
+            "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
             "auto_l1": True,
+        },
+        "fed_speeches": {  # Q-D4 (2026-10-12): 연설·증언. 자동 L1 대상 아님
+            "url": "https://www.federalreserve.gov/feeds/speeches_and_testimony.xml",
+            "auto_l1": False,
+            # Q2 리뷰 M1: v2 전용 — 수집·SourceResult·v2 후보에만 포함, v1 판정 경로 미포함
+            #   (v1 결과 origin/main 동일 유지. v2 전환(Q3) 시 함께 제거/결정)
+            "v2_only": True,
         },
     },
     "A": {
-          "reuters_markets": {
-              "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
-              "auto_l1": False,
-          },
-          "investing_com": {          # reuters_breaking 교체 — Reuters RSS 폐쇄 (2026-05-03)
-              "url": "https://www.investing.com/rss/news.rss",
-              "auto_l1": False,
-          },
-      },
-    "B": {
-        "yahoo_finance": {
-            "url": "https://finance.yahoo.com/news/rssindex",
+        # 키 이름은 이력 호환(event_id = sha256(source_name+url+title), ia_* 이력)을 위해 유지.
+        # 실제 피드는 CNBC Markets RSS(id=10001147) — Reuters 피드 아님.
+        "reuters_markets": {
+            "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
             "auto_l1": False,
+        },
+        "investing_com": {  # reuters_breaking 교체 — Reuters RSS 폐쇄 (2026-05-03)
+            "url": "https://www.investing.com/rss/news.rss",
+            "auto_l1": False,
+        },
+    },
+    "B": {
+        # yahoo_finance 비활성 (Q-D3, 2026-10-12): rssindex HTTP 404 (드라이런 #2001)
+        # "yahoo_finance": {"url": "https://finance.yahoo.com/news/rssindex", "auto_l1": False},
+        "marketwatch": {  # Q-D3 대체
+            "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+            "auto_l1": False,
+            "v2_only": True,  # Q2 리뷰 M2: v1 교차검증·판정 경로 미포함 (fed_speeches 와 동일)
         },
     },
 }

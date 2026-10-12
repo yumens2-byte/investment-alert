@@ -1,0 +1,595 @@
+{
+ "layer": {
+  "G-01|intraday|None": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   "NONE 판정 (score=0.00, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-02|intraday|None": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.34,
+   "NONE 판정 (score=0.00, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-03|intraday|None": [
+   "L1",
+   7.5,
+   7.5,
+   0.0,
+   0.6,
+   "L1 판정 (score=7.50, profile=intraday, top_factor=tier_s_auto_l1)"
+  ],
+  "G-04|intraday|None": [
+   "NONE",
+   3.6,
+   3.6,
+   0.0,
+   0.49,
+   "NONE 판정 (score=3.60, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-05|intraday|None": [
+   "L1",
+   10.0,
+   11.38,
+   0.0,
+   0.86,
+   "L1 판정 (score=10.00, profile=intraday, top_factor=score_threshold_l1)"
+  ],
+  "G-06|intraday|None": [
+   "NONE",
+   7.2,
+   6.0,
+   1.2,
+   0.53,
+   "NONE 판정 (score=7.20, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-01|intraday|''": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   "NONE 판정 (score=0.00, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-02|intraday|''": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.34,
+   "NONE 판정 (score=0.00, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-03|intraday|''": [
+   "L1",
+   7.5,
+   7.5,
+   0.0,
+   0.6,
+   "L1 판정 (score=7.50, profile=intraday, top_factor=tier_s_auto_l1)"
+  ],
+  "G-04|intraday|''": [
+   "NONE",
+   3.6,
+   3.6,
+   0.0,
+   0.49,
+   "NONE 판정 (score=3.60, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-05|intraday|''": [
+   "L1",
+   10.0,
+   11.38,
+   0.0,
+   0.86,
+   "L1 판정 (score=10.00, profile=intraday, top_factor=score_threshold_l1)"
+  ],
+  "G-06|intraday|''": [
+   "NONE",
+   7.2,
+   6.0,
+   1.2,
+   0.53,
+   "NONE 판정 (score=7.20, profile=intraday, top_factor=below_threshold)"
+  ],
+  "G-01|extended|None": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   "NONE 판정 (score=0.00, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-02|extended|None": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.34,
+   "NONE 판정 (score=0.00, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-03|extended|None": [
+   "L1",
+   7.5,
+   7.5,
+   0.0,
+   0.6,
+   "L1 판정 (score=7.50, profile=extended, top_factor=tier_s_auto_l1)"
+  ],
+  "G-04|extended|None": [
+   "NONE",
+   3.6,
+   3.6,
+   0.0,
+   0.49,
+   "NONE 판정 (score=3.60, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-05|extended|None": [
+   "L2",
+   10.0,
+   11.38,
+   0.0,
+   0.86,
+   "L2 판정 (score=10.00, profile=extended, top_factor=health_demotion_l1_to_l2)"
+  ],
+  "G-06|extended|None": [
+   "NONE",
+   7.2,
+   6.0,
+   1.2,
+   0.53,
+   "NONE 판정 (score=7.20, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-01|extended|''": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   "NONE 판정 (score=0.00, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-02|extended|''": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.34,
+   "NONE 판정 (score=0.00, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-03|extended|''": [
+   "L1",
+   7.5,
+   7.5,
+   0.0,
+   0.6,
+   "L1 판정 (score=7.50, profile=extended, top_factor=tier_s_auto_l1)"
+  ],
+  "G-04|extended|''": [
+   "NONE",
+   3.6,
+   3.6,
+   0.0,
+   0.49,
+   "NONE 판정 (score=3.60, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-05|extended|''": [
+   "L2",
+   10.0,
+   11.38,
+   0.0,
+   0.86,
+   "L2 판정 (score=10.00, profile=extended, top_factor=health_demotion_l1_to_l2)"
+  ],
+  "G-06|extended|''": [
+   "NONE",
+   7.2,
+   6.0,
+   1.2,
+   0.53,
+   "NONE 판정 (score=7.20, profile=extended, top_factor=below_threshold)"
+  ],
+  "G-01|holiday|None": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   "NONE 판정 (score=0.00, profile=holiday, top_factor=below_threshold)"
+  ],
+  "G-02|holiday|None": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.34,
+   "NONE 판정 (score=0.00, profile=holiday, top_factor=below_threshold)"
+  ],
+  "G-03|holiday|None": [
+   "L1",
+   7.5,
+   7.5,
+   0.0,
+   0.6,
+   "L1 판정 (score=7.50, profile=holiday, top_factor=tier_s_auto_l1)"
+  ],
+  "G-04|holiday|None": [
+   "NONE",
+   3.6,
+   3.6,
+   0.0,
+   0.49,
+   "NONE 판정 (score=3.60, profile=holiday, top_factor=below_threshold)"
+  ],
+  "G-05|holiday|None": [
+   "L2",
+   10.0,
+   11.38,
+   0.0,
+   0.86,
+   "L2 판정 (score=10.00, profile=holiday, top_factor=health_demotion_l1_to_l2)"
+  ],
+  "G-06|holiday|None": [
+   "NONE",
+   7.2,
+   6.0,
+   1.2,
+   0.53,
+   "NONE 판정 (score=7.20, profile=holiday, top_factor=below_threshold)"
+  ],
+  "G-01|holiday|''": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   "NONE 판정 (score=0.00, profile=holiday, top_factor=below_threshold)"
+  ],
+  "G-02|holiday|''": [
+   "NONE",
+   0.0,
+   0.0,
+   0.0,
+   0.34,
+   "NONE 판정 (score=0.00, profile=holiday, top_factor=below_threshold)"
+  ],
+  "G-03|holiday|''": [
+   "L1",
+   7.5,
+   7.5,
+   0.0,
+   0.6,
+   "L1 판정 (score=7.50, profile=holiday, top_factor=tier_s_auto_l1)"
+  ],
+  "G-04|holiday|''": [
+   "NONE",
+   3.6,
+   3.6,
+   0.0,
+   0.49,
+   "NONE 판정 (score=3.60, profile=holiday, top_factor=below_threshold)"
+  ],
+  "G-05|holiday|''": [
+   "L2",
+   10.0,
+   11.38,
+   0.0,
+   0.86,
+   "L2 판정 (score=10.00, profile=holiday, top_factor=health_demotion_l1_to_l2)"
+  ],
+  "G-06|holiday|''": [
+   "NONE",
+   7.2,
+   6.0,
+   1.2,
+   0.53,
+   "NONE 판정 (score=7.20, profile=holiday, top_factor=below_threshold)"
+  ]
+ },
+ "filter": {
+  "10-year Treasury yield hits highest since 2007": null,
+  "AI Disruption Concerns Dampen Wix.com (WIX)": [
+   2.0,
+   [
+    "concern"
+   ]
+  ],
+  "Alnylam Q2 2026 slides show strong growth amid guidance cut, stock plunge": [
+   6.5,
+   [
+    "plunge",
+    "guidance cut"
+   ]
+  ],
+  "Asia stocks rally on upbeat Nvidia earnings, KOSPI surges 8% on Samsung union deal": [
+   2.5,
+   [
+    "surge"
+   ]
+  ],
+  "Auddia stock surges on strong Discovr Radio engagement metrics": [
+   2.5,
+   [
+    "surge"
+   ]
+  ],
+  "Audi continues U.S. product push with three-row Q9 SUV": null,
+  "AutoZone stock has worst day in four years, despite retailer beating Wall Street estimates": null,
+  "Big central banks say rate hikes are getting closer": [
+   3.0,
+   [
+    "rate hike"
+   ]
+  ],
+  "Blue Owl shares surge after private credit firm cites 10X gains from SpaceX": [
+   2.5,
+   [
+    "surge"
+   ]
+  ],
+  "CPI rises 0.4%": null,
+  "CarMax shares fall after used car retailer reports earnings beats, CEO details turnaround plan": [
+   2.0,
+   [
+    "earnings beat"
+   ]
+  ],
+  "Carrefour tumbles after JPMorgan places stock on negative catalyst watch": [
+   2.5,
+   [
+    "tumble"
+   ]
+  ],
+  "Court blocks Alabama from erasing significantly Black US House district": [
+   2.5,
+   [
+    "significant"
+   ]
+  ],
+  "Daily Spotlight: Fed Dissents Put Rate Cuts in Doubt": [
+   3.0,
+   [
+    "rate cut"
+   ]
+  ],
+  "Deckers Outdoor stock navigates growth and valuation concerns": [
+   2.0,
+   [
+    "concern"
+   ]
+  ],
+  "Delta delays debut of Saudi Arabia service until March after Riyadh airport attacks": null,
+  "Dow plunges 1,000 points": [
+   3.0,
+   [
+    "plunge"
+   ]
+  ],
+  "E.l.f. Beauty to walk back some tariff price increases amid high gas prices and consumer 'suffering'": [
+   2.0,
+   [
+    "tariff"
+   ]
+  ],
+  "Earnings call transcript: Boardwalk REIT Q2 2026 revenue misses, stock rises 2.4%": [
+   3.0,
+   [
+    "revenue miss"
+   ]
+  ],
+  "Earnings call transcript: Qfin Holdings Q1 2026 earnings miss, stock rises": [
+   2.5,
+   [
+    "earnings miss"
+   ]
+  ],
+  "Earnings call transcript: SiriusPoint tops q2 2026 EPS view but revenue misses": [
+   3.0,
+   [
+    "revenue miss"
+   ]
+  ],
+  "Earnings call transcript: Teladoc shares sink after Q2 2026 revenue miss": [
+   3.0,
+   [
+    "revenue miss"
+   ]
+  ],
+  "Emergency medical evacuation insurance: What it covers, what it costs, and how to compare plans": [
+   5.0,
+   [
+    "emergency"
+   ]
+  ],
+  "Emergency rate cut": [
+   8.0,
+   [
+    "emergency",
+    "rate cut"
+   ]
+  ],
+  "Evercore ISI cuts Meta stock price target to $820 on AI spending concerns": [
+   2.0,
+   [
+    "concern"
+   ]
+  ],
+  "FAA warns U.S. airlines of safety risks over Saudi Arabia after attacks": null,
+  "FCC launches review of Disney broadcast licenses years ahead of schedule": null,
+  "FOMC holds rates steady": null,
+  "FTAI Aviation earnings missed by $0.55, revenue topped estimates": [
+   2.5,
+   [
+    "earnings miss"
+   ]
+  ],
+  "Fed cuts rates by quarter point": null,
+  "Fed signals rate cut": [
+   3.0,
+   [
+    "rate cut"
+   ]
+  ],
+  "Fed signals rate cuts ahead": [
+   3.0,
+   [
+    "rate cut"
+   ]
+  ],
+  "Federal Reserve issues FOMC statement": null,
+  "Ferrari CEO says he 'would not change anything' about polarizing Luce EV debut": null,
+  "Gray Media Q2 2026 slides: political ad surge drives earnings beat": [
+   4.5,
+   [
+    "surge",
+    "earnings beat"
+   ]
+  ],
+  "India weighs options including rate hikes to stabilize floundering rupee- Bloomberg": [
+   3.0,
+   [
+    "rate hike"
+   ]
+  ],
+  "Japanese yen surges on pension investment plan, dollar loses ground": [
+   2.5,
+   [
+    "surge"
+   ]
+  ],
+  "Oil prices fall 5% to 3-month low on hopes Strait of Hormuz will open": [
+   4.5,
+   [
+    "strait of hormuz"
+   ]
+  ],
+  "Oil prices spike after drone strike on Saudi facility": null,
+  "Oil surges after attacks on Saudi airport": [
+   2.5,
+   [
+    "surge"
+   ]
+  ],
+  "PCE Inflation Data Sets High Bar For Warsh's Jackson Hole Speech (Live Coverage)": [
+   6.5,
+   [
+    "pce inflation",
+    "jackson hole"
+   ]
+  ],
+  "PepsiCo earnings miss estimates as U.S. consumers tighten their budgets": [
+   2.5,
+   [
+    "earnings miss"
+   ]
+  ],
+  "Powell says Fed will cut interest rates": null,
+  "PriceSmart earnings missed by $0.04, revenue topped estimates": [
+   2.5,
+   [
+    "earnings miss"
+   ]
+  ],
+  "Procter & Gamble revenue misses estimates as volume stays unchanged": [
+   3.0,
+   [
+    "revenue miss"
+   ]
+  ],
+  "Recession fears grow": [
+   3.5,
+   [
+    "recession"
+   ]
+  ],
+  "S&P 500 drops 3%": null,
+  "Samsung Q2 profit surges on AI-fueled memory demand": [
+   2.5,
+   [
+    "surge"
+   ]
+  ],
+  "Starbucks says it is not buying Chipotle after takeover speculation": null,
+  "Sticky PCE inflation leaves a divided central bank ahead of Fed's Jackson Hole retreat": [
+   6.5,
+   [
+    "pce inflation",
+    "jackson hole"
+   ]
+  ],
+  "Stock market today: Dow, S&P 500, Nasdaq slip as PCE inflation stays sticky, Nvidia earnings loom": [
+   3.0,
+   [
+    "pce inflation"
+   ]
+  ],
+  "Stocks fall as inflation rises more than expected": null,
+  "Stride names Robert Knowling as CEO, reports preliminary results": [
+   2.5,
+   [
+    "preliminary results"
+   ]
+  ],
+  "Subsea7 Q2 2026 slides: EBITDA margin hits 24%, guidance raised": [
+   2.5,
+   [
+    "guidance raised"
+   ]
+  ],
+  "Treasury yields jump": null,
+  "Trump bets Hormuz blockade will break Iran before triggering a global crisis": [
+   4.5,
+   [
+    "crisis"
+   ]
+  ],
+  "Twilio Stock Surges 31% On Earnings Beat As AI Tools Gain Traction": [
+   4.5,
+   [
+    "surge",
+    "earnings beat"
+   ]
+  ],
+  "US rate futures cut chances of September rate hike after jobs data": [
+   3.0,
+   [
+    "rate hike"
+   ]
+  ],
+  "Volkswagen to cut model lineup, capacity in bid to tackle crisis": [
+   4.5,
+   [
+    "crisis"
+   ]
+  ],
+  "Wall Street hits record high as Micron Technology surges to $1 trillion market cap": [
+   2.5,
+   [
+    "surge"
+   ]
+  ],
+  "Warsh promises sweeping Fed review after central bank hints at rate hike this year": [
+   3.0,
+   [
+    "rate hike"
+   ]
+  ],
+  "Wizz Air: RBC downgrades to \"Underperform\" on earnings recovery concerns": [
+   2.0,
+   [
+    "concern"
+   ]
+  ],
+  "Zscaler shares tumble as lower free cash flow outlook overshadows upbeat Q3 result": [
+   2.5,
+   [
+    "tumble"
+   ]
+  ]
+ },
+ "dict_sha256": "6951329e4a33a6100d091a1733e628d913ff84c3614e5b26fd1f0b1b6481d9a9",
+ "dict_count": 120
+}

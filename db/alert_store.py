@@ -24,7 +24,7 @@ from typing import Literal
 
 from core.logger import get_logger
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"  # Q1: set_cooldown(minutes=) — 소스 장애 경고 억제 키 재사용
 
 logger = get_logger(__name__)
 
@@ -286,7 +286,7 @@ class AlertStore:
             logger.warning(f"[AlertStore] 쿨다운 조회 실패 (False 반환): {e}")
             return False
 
-    def set_cooldown(self, level: str, alert_id: str) -> bool:
+    def set_cooldown(self, level: str, alert_id: str, minutes: int | None = None) -> bool:
         """
         제목: 쿨다운 설정
         내용: 발행 후 해당 레벨의 cooldown_until을 현재 시각 + COOLDOWN_MINUTES로 설정합니다.
@@ -294,13 +294,16 @@ class AlertStore:
         Args:
             level: 'L1'|'L2'|'L3'
             alert_id: 발행된 Alert ID
+            minutes: 쿨다운 분 (None 이면 COOLDOWN_MINUTES[level], 미등록 90).
+                     Q1: 'ops:source_fail:<소스>' 키처럼 표에 없는 키의 기간 지정용.
 
         Returns:
             bool: 성공 시 True
         """
         try:
             client = self._get_client()
-            minutes = COOLDOWN_MINUTES.get(level, 90)
+            if minutes is None:
+                minutes = COOLDOWN_MINUTES.get(level, 90)
             now = datetime.now(UTC)
             cooldown_until = now + timedelta(minutes=minutes)
 

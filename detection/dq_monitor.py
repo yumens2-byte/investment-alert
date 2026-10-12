@@ -28,9 +28,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from collectors.base import CollectorEvent
+from config.settings import DQ_FRESH_WINDOW_DEFAULT_SECONDS, get_env_int
 from core.logger import get_logger
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"  # Q1: get_env_int 공통 파서, 소스 단위 성공률(6소스) 주석
 
 logger = get_logger(__name__)
 
@@ -99,7 +100,8 @@ class DataQualityMonitor:
     DEFAULT_THRESHOLDS: dict[str, float] = {
         # B-fix2: 0.50 → 0.75
         # fresh가 정보성으로 retire되면서 source_success_rate가 주 건강 지표.
-        # 4개 소스 중 1개 실패(0.75)는 통과, 2개 실패(0.50)부터 degraded.
+        # Q1 (v1.1.0): 분모 = 뉴스 5소스 + youtube_collector 1 = 6.
+        # 1개 실패(0.833)는 통과(+운영 경고), 2개 실패(0.667)부터 degraded.
         "source_success_rate_min": 0.75,
         # B-fix2: 0.10 → 0.0
         # fresh는 운영 현실상 평화/휴장/심야엔 0이 정상이므로 정보성 지표로 보관.
@@ -112,7 +114,7 @@ class DataQualityMonitor:
     # B-fix2: NewsValidator.window_hours(24h)와 일치
     # 1시간은 운영 cron 주기 + RSS 갱신 주기보다 짧아 평화 시간대 거짓 DEGRADED 발생.
     # env DQ_FRESH_WINDOW_SECONDS로 운영 시 동적 조정 가능.
-    DEFAULT_FRESH_WINDOW_SECONDS: int = 24 * 3600
+    DEFAULT_FRESH_WINDOW_SECONDS: int = DQ_FRESH_WINDOW_DEFAULT_SECONDS  # 24 * 3600
 
     # 클래스 상수 호환 (기존 코드/테스트 참조용 — 인스턴스에서 self.fresh_window_seconds 사용)
     FRESH_WINDOW_SECONDS: int = DEFAULT_FRESH_WINDOW_SECONDS
@@ -135,15 +137,10 @@ class DataQualityMonitor:
         # B-fix2: fresh 윈도우는 env DQ_FRESH_WINDOW_SECONDS로 동적 조정 가능
         # 기본 24h (NewsValidator.window_hours와 일치)
         # 운영 시 더 짧게 잡고 싶으면 env로 override (예: 어닝 시즌 6h)
-        try:
-            self.fresh_window_seconds: int = int(
-                os.getenv(
-                    "DQ_FRESH_WINDOW_SECONDS",
-                    self.DEFAULT_FRESH_WINDOW_SECONDS,
-                )
-            )
-        except (TypeError, ValueError):
-            self.fresh_window_seconds = self.DEFAULT_FRESH_WINDOW_SECONDS
+        # Q1: 빈 문자열(secrets 미설정)·비정수 → 공통 기본 86400 (config.settings.get_env_int)
+        self.fresh_window_seconds: int = get_env_int(
+            "DQ_FRESH_WINDOW_SECONDS", DQ_FRESH_WINDOW_DEFAULT_SECONDS
+        )
 
         env_thresholds = {
             "source_success_rate_min": float(
