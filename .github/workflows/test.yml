@@ -27,11 +27,12 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       # ── 1단계: Lint (GTT팀 공통지침 11 규칙 B) ──────────
       - name: Ruff Check
