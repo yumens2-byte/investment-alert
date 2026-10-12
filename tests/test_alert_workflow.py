@@ -60,8 +60,8 @@ def test_alert_job_needs_and_if(text) -> None:
     alert = _job_block(text, "alert")
     assert re.search(r"^    needs: gate$", alert, re.MULTILINE)
     assert (
-        "if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' "
-        "|| needs.gate.outputs.inside == 'true') }}"
+        "if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' "
+        "&& inputs.source != 'scheduler') || needs.gate.outputs.inside == 'true') }}"
     ) in alert
 
 
@@ -106,3 +106,23 @@ def test_detection_policy_env_from_vars(text) -> None:
     """Q2: alert job env 에 DETECTION_POLICY 를 repository vars 로 전달 (미설정=빈 문자열 → v1)."""
     alert = _job_block(text, "alert")
     assert re.search(r"^      DETECTION_POLICY: \$\{\{ vars\.DETECTION_POLICY \}\}", alert, re.MULTILINE)
+
+
+@pytest.mark.unit
+def test_dispatch_source_input(text) -> None:
+    """외부 스케줄러: workflow_dispatch 에 source(choice: manual|scheduler, 기본 manual)."""
+    head = text.split("\njobs:")[0]
+    assert re.search(r"^      source:\n", head, re.MULTILINE)
+    assert "type: choice" in head
+    assert "options: [manual, scheduler]" in head
+    assert re.search(r"^        default: manual$", head, re.MULTILINE)
+
+
+@pytest.mark.unit
+def test_trigger_source_env_and_delay(text) -> None:
+    alert = _job_block(text, "alert")
+    assert (
+        "TRIGGER_SOURCE: ${{ github.event_name == 'workflow_dispatch' "
+        "&& inputs.source || github.event_name }}"
+    ) in alert
+    assert "if: github.event_name == 'schedule' || inputs.source == 'scheduler'" in alert

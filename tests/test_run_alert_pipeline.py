@@ -131,7 +131,7 @@ def harness(monkeypatch, tmp_path):
     """run_alert 외부 의존성 전체 mock. h.store / h.tg / h.x_cls / h.guard / h.saved_rows 제공."""
     h = SimpleNamespace()
     monkeypatch.chdir(tmp_path)
-    for key in ("GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT", "DUP_OBSERVE_ONLY"):
+    for key in ("GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT", "DUP_OBSERVE_ONLY", "TRIGGER_SOURCE"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("GITHUB_RUN_ID", "run-42")
     monkeypatch.setattr(run_alert, "DRY_RUN", False)
@@ -759,6 +759,42 @@ def test_gate_passed_but_window_left_warning(harness, monkeypatch, capsys,
     run_alert.run()
 
     assert ("::warning::gate 통과 후 창 이탈" in capsys.readouterr().out) is warned
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source,warned", [
+    ("scheduler", True),   # 외부 스케줄러(pg_cron → workflow_dispatch source=scheduler)
+    ("schedule", True),
+    ("manual", False),
+])
+def test_window_left_warning_by_trigger_source(harness, monkeypatch, capsys,
+                                               source, warned) -> None:
+    """TRIGGER_SOURCE 가 GITHUB_EVENT_NAME 보다 우선한다 (dispatch 라도 scheduler 면 경고)."""
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("TRIGGER_SOURCE", source)
+    harness.window = WindowDecision(False, None, "2026-10-13", "outside_window_et:x")
+
+    run_alert.run()
+
+    assert ("::warning::gate 통과 후 창 이탈" in capsys.readouterr().out) is warned
+
+
+@pytest.mark.unit
+def test_trigger_source_recorded_in_detail(harness, monkeypatch) -> None:
+    monkeypatch.setenv("TRIGGER_SOURCE", "scheduler")
+
+    run_alert.run()
+
+    assert harness.saved_rows[-1]["detail"]["trigger_source"] == "scheduler"
+
+
+@pytest.mark.unit
+def test_trigger_source_fallback_to_event_name(monkeypatch) -> None:
+    monkeypatch.delenv("TRIGGER_SOURCE", raising=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    assert run_alert._trigger_source() == "schedule"
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    assert run_alert._trigger_source() == "local"
 
 
 # ────────────────────────────────────────────────────────

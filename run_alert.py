@@ -51,7 +51,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_alert")
 
-VERSION = "1.5.0"  # Q1 소스 장애 내부 경고 / v1.4.0: P1 gate 위임 / P2 창 claim / P3 RunRecorder·종료코드 / P5 legacy 삭제 / P7 DupGuard
+VERSION = "1.5.1"  # 외부 스케줄러(source=scheduler) 대응 / v1.5.0: Q1 소스 장애 내부 경고 / v1.4.0: P1 gate 위임 / P2 창 claim / P3 RunRecorder·종료코드 / P5 legacy 삭제 / P7 DupGuard
 
 CHANNELS: tuple[str, ...] = ("tg_free", "tg_paid", "tg_internal", "x")
 NOTIFY_OUTCOMES: frozenset[str] = frozenset({"partial_fail", "all_fail", "error"})
@@ -370,9 +370,21 @@ def _notify_source_failures(alert_store, result) -> None:
         )
 
 
+def _trigger_source() -> str:
+    """실행 주체: manual | scheduler (workflow_dispatch input) | schedule (GitHub cron). 미설정 시 이벤트명."""
+    raw = (os.getenv("TRIGGER_SOURCE") or os.getenv("GITHUB_EVENT_NAME") or "").strip().lower()
+    return raw or "local"
+
+
+def _is_scheduled_trigger() -> bool:
+    """정해진 창 시각에 실행돼야 하는 주체(GitHub cron 또는 외부 스케줄러)인지."""
+    return _trigger_source() in ("schedule", "scheduler")
+
+
 def _run_pipeline(alert_store, rec: RunRecorder) -> dict:
     """창 판정 → 감지 → claim → 발행 → 기록. outcome 은 rec.finish 로 확정한다."""
     window: WindowDecision | None = None
+    rec.add_detail(trigger_source=_trigger_source())
     if DRY_RUN:
         logger.info("[run_alert] DRY_RUN — 시간 윈도우 체크 생략, 강제 실행")
     else:
@@ -381,7 +393,7 @@ def _run_pipeline(alert_store, rec: RunRecorder) -> dict:
             outcome = _window_skip_outcome(window)
             logger.info(f"[run_alert] 시간 윈도우 아님({outcome}) — 스킵: {window.reason}")
             rec.finish(outcome, window_reason=window.reason)
-            if os.getenv("GITHUB_EVENT_NAME") == "schedule" and outcome == "outside_window":
+            if _is_scheduled_trigger() and outcome == "outside_window":
                 print(f"::warning::gate 통과 후 창 이탈 — {window.reason}")
             return {"alerts_detected": 0, "alerts_sent": 0, "reason": outcome}
         logger.info(f"[run_alert] 창 진입: {window.reason}")
