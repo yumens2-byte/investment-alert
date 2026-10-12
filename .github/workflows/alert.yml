@@ -62,6 +62,7 @@ jobs:
       TELEGRAM_INTERNAL_CHANNEL_ID: ${{ secrets.TELEGRAM_INTERNAL_CHANNEL_ID }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
       POLICY_VERSION: 'v1.1.0'   # C3 패치 (v1.1.0): 정책 버전 명시 적재
+      DETECTION_POLICY: ${{ vars.DETECTION_POLICY }}   # Q2: v1|v2 (미설정=v1, 비활성 정책은 shadow 기록)
       YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
       YOUTUBE_API_KEY : ${{ secrets.YOUTUBE_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
