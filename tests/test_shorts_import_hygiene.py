@@ -4,6 +4,16 @@ import ast
 from pathlib import Path
 
 IMPORT_HYGIENE_FILES = (
+    Path("run_youtube_shorts.py"),
+    Path("run_shorts.py"),
+    Path("tests/test_shorts_runtime.py"),
+    Path("tests/test_shorts_action_config.py"),
+    Path("tests/test_shorts_import_hygiene.py"),
+)
+DEPRECATED_COLLISION_PATHS = (
+    Path("tests/test_shorts_pilot.py"),
+    Path("tests/test_shorts_workflow.py"),
+)
     Path("run_shorts.py"),
     Path("tests/test_shorts_pilot.py"),
     Path("tests/test_shorts_action_config.py"),
@@ -36,3 +46,8 @@ def test_shorts_source_imports_are_unique_and_top_level() -> None:
     """중복 patch로 발생한 E402/F811 import 회귀를 ruff 이전에도 탐지한다."""
     for path in IMPORT_HYGIENE_FILES:
         _assert_import_hygiene(path)
+
+
+def test_deprecated_collision_paths_do_not_reappear() -> None:
+    for path in DEPRECATED_COLLISION_PATHS:
+        assert not path.exists(), f"stale patch collision path reappeared: {path}"
