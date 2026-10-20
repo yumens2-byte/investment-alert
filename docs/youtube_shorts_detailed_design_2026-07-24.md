@@ -101,6 +101,7 @@ shorts/
   observability/
     metrics.py
     notifier.py
+run_youtube_shorts.py
 run_shorts.py
 ```
 
@@ -114,6 +115,7 @@ Provider별 SDK 객체가 도메인에 노출되지 않도록 protocol adapter�
 
 workflow는 15분마다 실행한다. UTC cron은 실행 신호일 뿐 게시 시각 판정은 Python이 수행한다.
 
+Phase 1 구현 파일은 `.github/workflows/shorts_pilot.yml`이다. 기존 Alert/Sector workflow와 다른 concurrency group을 사용하고 Secret, 모델 API, YouTube uploader를 호출하지 않는다. 스케줄 실행은 `run_youtube_shorts.py --dispatch`를 호출해 슬롯 밖에서는 성공적으로 skip하며, 수동 실행은 영상 포함 또는 manifest-only pilot을 선택한다.
 Phase 1 구현 파일은 `.github/workflows/shorts_pilot.yml`이다. 기존 Alert/Sector workflow와 다른 concurrency group을 사용하고 Secret, 모델 API, YouTube uploader를 호출하지 않는다. 스케줄 실행은 `run_shorts.py --dispatch`를 호출해 슬롯 밖에서는 성공적으로 skip하며, 수동 실행은 영상 포함 또는 manifest-only pilot을 선택한다.
 
 ```yaml
